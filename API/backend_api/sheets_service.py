@@ -1,39 +1,65 @@
-# backend_api/sheets_service.py
+# API/backend_api/sheets_service.py
+
 import gspread
 import json
 import os
+import base64 # 👈 REQUERIDO: Importación para decodificar Base64
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
+# --- Definición de Errores ---
+class ConnectionError(Exception):
+    """Excepción para errores de conexión a Google Sheets."""
+    pass
+
 # --- CONFIGURACIÓN DE CONEXIÓN SEGURA ---
-CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-SPREADSHEET_NAME = "gestion_condominio"
+# Se usará esta variable de entorno para las credenciales en Vercel
+GSPREAD_CREDENTIALS_B64 = os.environ.get("GSPREAD_CREDENTIALS")
+SPREADSHEET_NAME = "gestion_condominio" # Nombre de su hoja de cálculo
 
 class SheetsService:
     
     def __init__(self):
-        """Inicializa la conexión a Google Sheets usando credenciales de servicio."""
-        if not CREDENTIALS_JSON:
-            # En entorno de desarrollo local, carga el archivo 'colinadorada.json'
-            cred_path = os.path.join(os.path.dirname(__file__), 'colinadorada.json')
-            try:
-                with open(cred_path, 'r') as f:
-                    credentials_data = json.load(f)
-                print(f"[INFO] Credenciales cargadas desde archivo local: {cred_path}")
-            except FileNotFoundError:
-                print(f"[ERROR] No se encontró el archivo de credenciales en: {cred_path}")
-                raise ConnectionError(f"ERROR: Falta la variable GSPREAD_CREDENTIALS y el archivo local en {cred_path}.")
-        else:
-            credentials_data = json.loads(CREDENTIALS_JSON)
+        """Inicializa la conexión a Google Sheets usando credenciales Base64 del entorno."""
+        self.sh = None
+        self.gc = None
         
-        # Conexión al cliente y a la hoja de cálculo
-        self.gc = gspread.service_account_from_dict(credentials_data)
         try:
-            self.sh = self.gc.open(SPREADSHEET_NAME)
-        except gspread.exceptions.SpreadsheetNotFound:
-            print(f"[ERROR] Hoja de cálculo '{SPREADSHEET_NAME}' no encontrada.")
+            # 1. Verificar si la variable Base64 existe
+            if not GSPREAD_CREDENTIALS_B64:
+                # 🛑 ERROR FATAL: No se encontró la variable de entorno
+                raise ConnectionError("ERROR: La variable de entorno 'GSPREAD_CREDENTIALS' no está configurada o está vacía.")
+            
+            # 2. Decodificar la cadena Base64 a JSON
+            try:
+                creds_json_string = base64.b64decode(GSPREAD_CREDENTIALS_B64).decode('utf-8')
+                credentials_data = json.loads(creds_json_string)
+            except Exception as e:
+                # Error en la decodificación o formato
+                raise ConnectionError(f"ERROR: Falló la decodificación o el formato JSON de GSPREAD_CREDENTIALS. Causa: {e}")
+            
+            # 3. Conexión al cliente
+            self.gc = gspread.service_account_from_dict(credentials_data)
+            
+            # 4. Conexión a la hoja de cálculo
+            try:
+                self.sh = self.gc.open(SPREADSHEET_NAME)
+                print(f"[INFO] Conexión exitosa a Google Sheets: '{SPREADSHEET_NAME}'")
+            except gspread.exceptions.SpreadsheetNotFound:
+                print(f"[ERROR] Hoja de cálculo '{SPREADSHEET_NAME}' no encontrada.")
+                self.sh = None
+                
+        except ConnectionError as e:
+            # Captura los errores personalizados (como la falta de la variable)
+            print(f"[ERROR DE CONEXIÓN]: {e}")
+            self.sh = None
+        except Exception as e:
+            # Captura errores inesperados de gspread o json
+            print(f"[ERROR INESPERADO al inicializar SheetsService]: {e}")
             self.sh = None
 
+    # --- MÉTODOS EXISTENTES RESTAURADOS ---
+    
     def get_sheet(self, sheet_title: str) -> gspread.Worksheet:
         """Obtiene una hoja por su título."""
         if not self.sh:
@@ -76,11 +102,8 @@ class SheetsService:
     def get_user_by_id_casa(self, id_casa: int) -> Optional[Dict[str, Any]]:
         """Busca y retorna el registro de usuario (incluyendo NOMBRE) para una casa."""
         try:
-            # Usamos el mapa para una búsqueda más rápida si fuera necesario, 
-            # pero mantenemos esta implementación simple para el estado de cuenta individual.
             usuarios_data = self.get_all_records('USUARIOS')
             for user in usuarios_data:
-                # Usamos str() para asegurar la comparación correcta de tipos
                 if user.get('ID_CASA') and str(user['ID_CASA']) == str(id_casa):
                     return user
             return None
@@ -88,7 +111,7 @@ class SheetsService:
             print(f"[ERROR SHEETS] Error al obtener usuario por ID_CASA {id_casa}: {e}")
             return None
 
-    # --- FUNCIÓN NUEVA: OBTENER MAPA DE USUARIOS (Para el Admin Panel) ---
+    # --- FUNCIÓN: OBTENER MAPA DE USUARIOS (Para el Admin Panel) ---
     def get_all_users_map(self) -> Dict[str, Dict[str, Any]]:
         """
         Obtiene todos los usuarios y los mapea por ID_CASA para una búsqueda rápida,
@@ -110,7 +133,7 @@ class SheetsService:
                 }
         return user_map
 
-    # 🚨 FUNCIÓN CORREGIDA: get_all_casa_ids (Ahora dentro de la clase) 🚨
+    # --- FUNCIÓN: get_all_casa_ids ---
     def get_all_casa_ids(self) -> List[int]:
         """Obtiene una lista de todos los ID_CASA activos de la hoja USUARIOS."""
         
@@ -120,18 +143,14 @@ class SheetsService:
             casa_ids = []
             for record in records:
                 casa_id_str = str(record.get('ID_CASA', '')).strip()
-                
-                # Asumiendo un filtro de 'ESTADO' como "ACTIVO" si existe
                 estado = str(record.get('ESTADO', 'ACTIVO')).upper().strip() 
 
                 if casa_id_str and estado == 'ACTIVO':
                     try:
-                        # Usamos float() primero para manejar valores como "17.0"
                         casa_id = int(float(casa_id_str)) 
                         if casa_id not in casa_ids:
                             casa_ids.append(casa_id)
                     except ValueError:
-                        # Ignorar si no se puede convertir a número (ej. "Casa X")
                         continue
                         
             return sorted(casa_ids)
@@ -170,7 +189,6 @@ class SheetsService:
     def update_or_append_semaforo(self, id_casa: int, dias_atraso: int, saldo: float, estado: str, cuotas_pendientes: int) -> bool:
         """
         Busca ID_CASA en ALERTAS_SEMAFORO. Si existe, actualiza (6 columnas A:F); si no, añade.
-        Orden: ID_CASA, DIAS_ATRASO, SALDO_PENDIENTE, ESTADO_SEMAFORO, FECHA_ACTUALIZACION, CUOTAS_PENDIENTES.
         """
         sheet = self.get_sheet('ALERTAS_SEMAFORO')
         data = sheet.get_all_values()
@@ -178,9 +196,9 @@ class SheetsService:
         records = data[1:] if len(data) > 1 else []
         
         target_id_str = str(id_casa)
-        row_index_to_update = -1 # Índice base 1 (2 para la primera fila de datos)
+        row_index_to_update = -1 
         
-        # 1. Buscar fila existente (asumiendo ID_CASA en la Columna A)
+        # 1. Buscar fila existente (ID_CASA en la Columna A)
         for i, row in enumerate(records):
             if row and row[0].strip() == target_id_str: 
                 row_index_to_update = i + 2
@@ -189,16 +207,15 @@ class SheetsService:
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M')
         # 2. Preparar nueva data (6 columnas)
         new_data = [
-            target_id_str, # 1. ID_CASA
-            str(dias_atraso), # 2. DIAS_ATRASO
-            f"{saldo:.2f}", # 3. SALDO_PENDIENTE (Formato de moneda)
-            estado, # 4. ESTADO_SEMAFORO
-            current_time, # 5. FECHA_ACTUALIZACION
+            target_id_str,        # 1. ID_CASA
+            str(dias_atraso),     # 2. DIAS_ATRASO
+            f"{saldo:.2f}",       # 3. SALDO_PENDIENTE (Formato de moneda)
+            estado,               # 4. ESTADO_SEMAFORO
+            current_time,         # 5. FECHA_ACTUALIZACION
             str(cuotas_pendientes) # 6. CUOTAS_PENDIENTES (Columna F)
         ]
         
         try:
-            # Rango de actualización ahora es A:F (6 columnas)
             if row_index_to_update != -1:
                 # 3. Actualizar fila existente
                 range_to_update = f"A{row_index_to_update}:F{row_index_to_update}"
@@ -212,7 +229,7 @@ class SheetsService:
             return False
 
     # ----------------------------------------------------------------------
-    # --- MÉTODO NUEVO/ACTUALIZADO: LECTURA DE SEMÁFORO (6 COLUMNAS) ---
+    # --- MÉTODO ACTUALIZADO: LECTURA DE SEMÁFORO (6 COLUMNAS) ---
     # ----------------------------------------------------------------------
     def get_semaforo_by_casa(self, id_casa: int) -> Optional[Dict[str, Any]]:
         """
@@ -223,8 +240,6 @@ class SheetsService:
         try:
             sheet = self.get_sheet(sheet_name)
             data = sheet.get_all_values()
-            
-            # Orden de las columnas: A: ID_CASA, B: DIAS_ATRASO, C: SALDO_PENDIENTE, D: ESTADO_SEMAFORO, E: FECHA_ACTUALIZACION, F: CUOTAS_PENDIENTES
             
             for row in data[1:]: # Ignora la fila de headers
                 if not row or str(row[0]) != str(id_casa):
@@ -238,17 +253,17 @@ class SheetsService:
                         "SALDO_PENDIENTE": float(row[2]) if row[2] else 0.0,
                         "ESTADO_SEMAFORO": row[3],
                         "FECHA_ACTUALIZACION": row[4],
-                        "CUOTAS_PENDIENTES": int(row[5]) if row[5] and row[5].isdigit() else 0 # <-- NUEVO CAMPO LEÍDO (Índice 5/Columna F)
+                        "CUOTAS_PENDIENTES": int(row[5]) if row[5] and row[5].isdigit() else 0 
                     }
                 else:
-                    # Caso de registros antiguos con menos columnas
+                    # Permite leer registros antiguos incompletos
                     return {
                         "ID_CASA": row[0],
                         "DIAS_ATRASO": int(row[1]) if row[1] and row[1].isdigit() else 0,
                         "SALDO_PENDIENTE": float(row[2]) if row[2] else 0.0,
                         "ESTADO_SEMAFORO": row[3],
                         "FECHA_ACTUALIZACION": row[4],
-                        "CUOTAS_PENDIENTES": 0 # Valor por defecto si la columna F no existe
+                        "CUOTAS_PENDIENTES": 0 # Valor por defecto
                     }
             
             return None # Casa no encontrada
@@ -259,10 +274,13 @@ class SheetsService:
 
 # Instancia global para usar en FastAPI
 try:
-    # Usamos None si el objeto sh no se pudo crear en __init__
+    # Intenta inicializar el servicio. Si falla por credenciales, sheets_service será None.
     sheets_service = SheetsService()
     if sheets_service.sh is None:
         sheets_service = None
 except ConnectionError as e:
     print(f"ERROR DE CONEXIÓN GLOBAL: {e}")
+    sheets_service = None
+except Exception as e:
+    print(f"ERROR INESPERADO en la inicialización global: {e}")
     sheets_service = None
