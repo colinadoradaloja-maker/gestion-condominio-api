@@ -50,8 +50,10 @@ class Movimiento(BaseModel):
     # Los siguientes campos estaban en minúsculas en tu esquema original, los ajustamos al formato SHEET_COLUMN para la API
     tipo_movimiento: str = Field(..., alias="TIPO_MOVIMIENTO") 
     monto: float = Field(..., alias="MONTO")
-    fecha_registro: str = Field(..., alias="FECHA_REGISTRO") # Usamos str aquí ya que sheets las devuelve como str
-    fecha_vencimiento: Optional[str] = Field(None, alias="FECHA_VENCIMIENTO")
+    
+    # 🚨 CORRECCIÓN CLAVE: Aceptar objetos datetime
+    fecha_registro: datetime = Field(..., alias="FECHA_REGISTRO")
+    fecha_vencimiento: Optional[datetime] = Field(None, alias="FECHA_VENCIMIENTO")
     
     # Adaptación para compatibilidad de campos que tenías en el esquema MOVIMIENTO (si existen en tu hoja)
     MES_PERIODO: Optional[str] = None
@@ -72,15 +74,15 @@ class SemaforoResult(BaseModel):
     DIAS_ATRASO: int = Field(..., alias="DIAS_ATRASO")
     CUOTAS_PENDIENTES: int = Field(..., alias="CUOTAS_PENDIENTES") 
 
-# 🚨 MODIFICACIÓN Y REEMPLAZO DEL ESQUEMA EXISTENTE 🚨
+# 🚨 ESTE MODELO FUE VALIDADO COMO CORRECTO EN EL LOG 🚨
 class EstadoCuentaResponse(BaseModel):
     """
     Respuesta COMPLETA del estado de cuenta, para la ruta /admin/estado-cuenta/{id_casa}.
     Contiene la info del condómino, el estado semáforo, y la lista detallada de movimientos.
     """
-    status: str
-    condomino: CondominoInfo
-    semaforo_actual: SemaforoResult
+    status: str # Campo requerido que faltaba en el diccionario de la respuesta
+    condomino: CondominoInfo # Campo requerido que faltaba en el diccionario de la respuesta
+    semaforo_actual: SemaforoResult # Campo requerido que faltaba en el diccionario de la respuesta
     movimientos: List[Movimiento]
 
 # --------------------------------------------------------
