@@ -20,7 +20,7 @@ class TokenResponse(BaseModel):
 
 class TokenData(BaseModel):
     """Datos internos que se almacenan en el payload del JWT (leído por security.py)."""
-    sub: Optional[str] = None  # DNI del usuario (subject)
+    sub: Optional[str] = None # DNI del usuario (subject)
     ID_CASA: Optional[int] = None # Campo con nombre original de la hoja
     ROL: Optional[str] = None
 

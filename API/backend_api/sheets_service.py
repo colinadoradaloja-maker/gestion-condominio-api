@@ -272,12 +272,12 @@ class SheetsService:
         
         # 2. Preparar nueva data (6 columnas A:F)
         new_data = [
-            target_id_str,        # 1. ID_CASA (A)
-            str(dias_atraso),     # 2. DIAS_ATRASO (B)
-            f"{saldo:.2f}",       # 3. SALDO_PENDIENTE (C)
-            estado,               # 4. ESTADO_SEMAFORO (D)
+            target_id_str, # 1. ID_CASA (A)
+            str(dias_atraso), # 2. DIAS_ATRASO (B)
+            f"{saldo:.2f}", # 3. SALDO_PENDIENTE (C)
+            estado, # 4. ESTADO_SEMAFORO (D)
             str(cuotas_pendientes), # 5. CUOTAS_PENDIENTES (E)
-            current_time,         # 6. FECHA_ACTUALIZACION (F)
+            current_time, # 6. FECHA_ACTUALIZACION (F)
         ]
         
         try:
