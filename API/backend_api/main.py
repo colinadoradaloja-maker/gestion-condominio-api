@@ -19,7 +19,6 @@ from API.backend_api.security import (
     RoleChecker
 )
 
-
 # --- CONFIGURACIÓN BÁSICA ---
 app = FastAPI(title="Backend Condominio FastAPI")
 
@@ -84,50 +83,60 @@ def get_condomino_estado_cuenta(
     try:
         # Aseguramos que casa_id sea un entero para la lógica interna y búsqueda
         casa_id = int(payload.ID_CASA) 
+        casa_id_str = str(casa_id) # ID de casa como string
         
-        # A. Obtener nombre del condómino
+        # A. Obtener información de usuario completa
         user_info = sheets_service.get_user_by_id_casa(casa_id) 
-        nombre_condomino = user_info['NOMBRE'] if user_info and 'NOMBRE' in user_info else "Condómino Desconocido"
-        
+        if not user_info:
+            raise HTTPException(status_code=404, detail=f"Casa {casa_id} no encontrada.")
+            
     except (ValueError, TypeError) as e:
         print(f"[ERROR] ID de Casa inválido en el token: {e}")
         raise HTTPException(status_code=400, detail="ID de Casa inválido en el token.")
     except Exception as e:
         print(f"[ERROR] No se pudo obtener info de usuario para Casa ID {casa_id}: {e}")
-        nombre_condomino = "Condómino Desconocido"
-
+        raise HTTPException(status_code=500, detail="Error al cargar la información del usuario.")
 
     try:
         # B. Obtener movimientos
         movimientos_data = sheets_service.get_records_by_casa_id('MOVIMIENTOS', casa_id)
         
-        # C. Obtener el estado del semáforo consolidado (6 campos)
-        semaforo_data = sheets_service.get_semaforo_by_casa(id_casa=casa_id)
-
-        # D. Calcular Saldo Pendiente y Formatear Movimientos
-        saldo_pendiente = 0.0
-        movimientos_list: List[schemas.Movimiento] = []
+        # C. Obtener el estado del semáforo consolidado
+        semaforo_info = sheets_service.get_semaforo_by_casa(id_casa=casa_id)
         
+        # D. Preparar datos para los modelos de respuesta
+        
+        # 1. Construir CondominoInfo
+        celular_str = str(user_info.get('CELULAR', 'N/A'))
+        condomino_data = schemas.CondominoInfo(
+            ID_CASA=casa_id_str,
+            nombre=user_info.get('NOMBRE', 'N/A'),
+            email=user_info.get('EMAIL', 'N/A'),
+            celular=celular_str,
+        )
+
+        # 2. Construir Movimientos (se mantiene la lógica de fechas corregida)
+        movimientos_list: List[schemas.Movimiento] = []
         for record in movimientos_data:
             try:
-                monto = float(record.get('MONTO', 0.0))
-                saldo_pendiente += monto
+                monto = float(record.get('MONTO', 0.0) or 0.0)
                 
                 # Formateo y validación de fechas para el esquema Movimiento
                 fecha_venc_str = record.get('FECHA_VENCIMIENTO', '')
                 fecha_reg_str = record.get('FECHA_REGISTRO', '')
                 
-                # Parsea fecha de vencimiento si existe y tiene el formato correcto
+                # Parsea fecha de vencimiento si existe (usa el formato de schemas.py: datetime)
                 fecha_vencimiento: Optional[datetime] = None
                 if fecha_venc_str:
                     try:
-                        fecha_vencimiento = datetime.strptime(fecha_venc_str, '%Y-%m-%d') 
+                        # Asume formato 'AAAA-MM-DD' o similar
+                        fecha_vencimiento = datetime.strptime(fecha_venc_str.split()[0], '%Y-%m-%d') 
                     except ValueError:
                         pass
                 
-                # Parsea la fecha de registro (siempre existe)
-                # NOTA: Asume que FECHA_REGISTRO es 'AAAA-MM-DD HH:MM' y solo toma la fecha
-                fecha_registro = datetime.strptime(fecha_reg_str.split()[0], '%Y-%m-%d') 
+                # Parsea la fecha de registro (el log indica que Google devuelve datetime, pero aquí forzamos la lectura)
+                # NOTA: Usamos .split()[0] para tomar solo la fecha si tiene hora
+                fecha_registro: datetime = datetime.strptime(fecha_reg_str.split()[0], '%Y-%m-%d') 
                 
                 movimientos_list.append(schemas.Movimiento(
                     ID_MOVIMIENTO=record['ID_MOVIMIENTO'],
@@ -139,29 +148,40 @@ def get_condomino_estado_cuenta(
                     TIPO_PAGO=record.get('TIPO_PAGO', None) or None,
                     FECHA_REGISTRO=fecha_registro
                 ))
-            except (ValueError, KeyError, TypeError) as e:
+            except Exception as e:
+                # El error del log 'datetime.datetime' se captura aquí.
                 print(f"[ERROR DATA] Registro fallido: {record}. Causa: {e}")
                 continue 
         
-        # E. Asignar datos del Semáforo o valores por defecto
-        if semaforo_data and semaforo_data.get('ESTADO_SEMAFORO'):
-            estado_semaforo = semaforo_data.get('ESTADO_SEMAFORO', "VERDE")
-            dias_atraso = semaforo_data.get('DIAS_ATRASO', 0)
-            cuotas_pendientes = semaforo_data.get('CUOTAS_PENDIENTES', 0)
-        else:
-            estado_semaforo = "NO_INFO"
-            dias_atraso = 0
-            cuotas_pendientes = 0
+        # 3. Construir SemaforoResult (usando la información consolidada)
+        if not semaforo_info or not semaforo_info.get('ESTADO_SEMAFORO'):
+             # Inicializar si no hay info consolidada
+             semaforo_info = {
+                 "ID_CASA": casa_id_str,
+                 "DIAS_ATRASO": 0,
+                 "SALDO_PENDIENTE": 0.0,
+                 "ESTADO_SEMAFORO": "NO_INFO",
+                 "CUOTAS_PENDIENTES": 0,
+             }
+
+        semaforo_result = schemas.SemaforoResult(
+            ID_CASA=casa_id_str,
+            SALDO=round(semaforo_info.get('SALDO_PENDIENTE', 0.0) or 0.0, 2),
+            ESTADO_SEMAFORO=semaforo_info.get('ESTADO_SEMAFORO', 'VERDE'),
+            DIAS_ATRASO=semaforo_info.get('DIAS_ATRASO', 0) or 0,
+            CUOTAS_PENDIENTES=semaforo_info.get('CUOTAS_PENDIENTES', 0) or 0,
+            nombre_condomino=condomino_data.nombre,
+            email=condomino_data.email,
+            celular=condomino_data.celular
+        )
             
-        # F. Retornar la respuesta final
+        # F. Retornar la respuesta final (CORRECCIÓN CLAVE)
+        # Se asegura que la respuesta contenga las TRES claves de nivel superior requeridas por EstadoCuentaResponse
         return schemas.EstadoCuentaResponse(
-            id_casa=casa_id, 
-            nombre_condomino=nombre_condomino,
-            movimientos=movimientos_list,
-            saldo_pendiente=round(saldo_pendiente, 2),
-            estado_semaforo=estado_semaforo,
-            dias_atraso=dias_atraso,
-            cuotas_pendientes=cuotas_pendientes
+            status="success",
+            condomino=condomino_data,
+            semaforo_actual=semaforo_result,
+            movimientos=movimientos_list
         )
         
     except Exception as e:
@@ -373,6 +393,7 @@ def actualizar_semaforo(payload: schemas.TokenData = Depends(get_current_user_pa
                     
                     if tipo == 'ALICUOTA' and monto > 0 and fecha_venc_str:
                         try:
+                            # NOTA: Se asume que FECHA_VENCIMIENTO está en formato 'AAAA-MM-DD'
                             fecha_vencimiento = datetime.strptime(fecha_venc_str, '%Y-%m-%d').date()
                             
                             if fecha_vencimiento <= hoy:
@@ -393,7 +414,7 @@ def actualizar_semaforo(payload: schemas.TokenData = Depends(get_current_user_pa
                     else:
                         estado_semaforo = "AMARILLO"
                 else:
-                    estado_semaforo = "AMARILLO"
+                    estado_semaforo = "AMARILLO" # Tiene saldo, pero no hay alícuotas vencidas (otras multas)
             
             
             # d. Actualizar la hoja ALERTAS_SEMAFORO (1 SOLA ESCRITURA POR CASA)
@@ -415,7 +436,7 @@ def actualizar_semaforo(payload: schemas.TokenData = Depends(get_current_user_pa
                 nombre_condomino=nombre,
                 email=email,
                 celular=celular
-            ).model_dump(by_alias=True)) 
+            )) 
             
         return schemas.SemaforoUpdateResponse(
             status="success", 
@@ -547,13 +568,28 @@ def get_estado_cuenta(id_casa: int, payload: schemas.TokenData = Depends(get_cur
         for m in movimientos_data:
             monto_val = float(m.get('MONTO', 0.0) or 0.0) 
             
+            # Formateo y validación de fechas para el esquema Movimiento
+            fecha_venc_str = m.get('FECHA_VENCIMIENTO', '')
+            fecha_reg_str = m.get('FECHA_REGISTRO', '')
+            
+            # Parsea fecha de vencimiento si existe (usa el formato de schemas.py: datetime)
+            fecha_vencimiento: Optional[datetime] = None
+            if fecha_venc_str:
+                try:
+                    fecha_vencimiento = datetime.strptime(fecha_venc_str.split()[0], '%Y-%m-%d') 
+                except ValueError:
+                    pass
+            
+            # Parsea la fecha de registro (usa el formato de schemas.py: datetime)
+            fecha_registro: datetime = datetime.strptime(fecha_reg_str.split()[0], '%Y-%m-%d')
+            
             # Nota: usamos el nombre de las columnas de Sheets para mapear
             movimientos_list.append(schemas.Movimiento(
                 ID_MOVIMIENTO=m.get('ID_MOVIMIENTO', 'N/A'),
                 TIPO_MOVIMIENTO=m.get('TIPO_MOVIMIENTO', 'N/A'),
                 MONTO=monto_val,
-                FECHA_REGISTRO=m.get('FECHA_REGISTRO', 'N/A'),
-                FECHA_VENCIMIENTO=m.get('FECHA_VENCIMIENTO', None),
+                FECHA_REGISTRO=fecha_registro,
+                FECHA_VENCIMIENTO=fecha_vencimiento,
                 MES_PERIODO=m.get('MES_PERIODO', None),
                 CONCEPTO=m.get('CONCEPTO', None),
                 TIPO_PAGO=m.get('TIPO_PAGO', None)
@@ -574,10 +610,10 @@ def get_estado_cuenta(id_casa: int, payload: schemas.TokenData = Depends(get_cur
         # Reusar el SemáforoResult para la estructura de estado consolidado
         semaforo_result = schemas.SemaforoResult(
             ID_CASA=str(id_casa),
-            SALDO=round(semaforo_info.get('SALDO_PENDIENTE', 0.0), 2),
+            SALDO=round(semaforo_info.get('SALDO_PENDIENTE', 0.0) or 0.0, 2),
             ESTADO_SEMAFORO=semaforo_info.get('ESTADO_SEMAFORO', 'VERDE'),
-            DIAS_ATRASO=semaforo_info.get('DIAS_ATRASO', 0),
-            CUOTAS_PENDIENTES=semaforo_info.get('CUOTAS_PENDIENTES', 0),
+            DIAS_ATRASO=semaforo_info.get('DIAS_ATRASO', 0) or 0,
+            CUOTAS_PENDIENTES=semaforo_info.get('CUOTAS_PENDIENTES', 0) or 0,
             nombre_condomino=condomino_data.nombre,
             email=condomino_data.email,
             celular=condomino_data.celular
