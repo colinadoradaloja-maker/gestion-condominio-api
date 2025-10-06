@@ -145,3 +145,21 @@ class SemaforoListResponse(BaseModel):
     status: str
     message: str
     results: List[SemaforoResult]
+
+# En la sección 3. Modelos de Creación (Input para el Admin)
+
+# ... (Mantener PagoCreation, MultaCreation, AlicuotaCreation)
+
+class TesoreriaCreation(BaseModel):
+    """Modelo para registrar cualquier movimiento (Ingreso o Egreso) a la Tesorería (ID_CASA 0)."""
+    TIPO_TRANSACCION: str = Field(..., description="Debe ser 'INGRESO' o 'EGRESO'.")
+    MONTO: float = Field(..., gt=0.0, description="Monto en valor absoluto.")
+    CONCEPTO: str
+    
+    @field_validator('TIPO_TRANSACCION')
+    @classmethod
+    def validate_tipo_transaccion(cls, v: str):
+        clean_v = v.strip().upper() 
+        if clean_v not in ['INGRESO', 'EGRESO']:
+            raise ValueError("TIPO_TRANSACCION debe ser 'INGRESO' o 'EGRESO'.")
+        return clean_v
