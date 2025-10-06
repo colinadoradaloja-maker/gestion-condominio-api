@@ -284,3 +284,38 @@ except ConnectionError as e:
 except Exception as e:
     print(f"ERROR INESPERADO en la inicialización global: {e}")
     sheets_service = None
+
+# --- EN API/backend_api/sheets_service.py (MODIFICACIÓN) ---
+
+def get_config_map(self) -> Dict[str, Any]:
+    """
+    Lee todos los pares clave-valor de la hoja CONFIGURACION y retorna un diccionario.
+    """
+    try:
+        data = self.get_all_records('CONFIGURACION')
+        config_map = {}
+        for row in data:
+            # ... (Lógica de conversión de tipo se mantiene igual)
+            value = row.get('VALOR', '').strip()
+            try:
+                if '.' in value or ',' in value:
+                    # Intenta convertir a float (para alícuota y porcentaje de descuento)
+                    config_map[row['CLAVE']] = float(value.replace(',', '.'))
+                else:
+                    # Intenta convertir a int (para día de vencimiento y puntos)
+                    config_map[row['CLAVE']] = int(value)
+            except ValueError:
+                config_map[row['CLAVE']] = value
+        
+        return config_map
+
+    except Exception as e:
+        print(f"[ERROR SHEETS] No se pudo leer la hoja CONFIGURACION: {e}")
+        # Retorna valores por defecto si falla la lectura
+        return {
+            "VALOR_ALICUOTA": 50.00,
+            "DIA_VENCIMIENTO": 5,
+            "PUNTOS_POR_PAGO_A_TIEMPO": 10,
+            # VALOR POR DEFECTO AGREGADO
+            "PORCENTAJE_DESCUENTO": 0.00 
+        }

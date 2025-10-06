@@ -136,3 +136,14 @@ class SemaforoListResponse(BaseModel):
     status: str
     message: str
     results: List[SemaforoResult]
+
+# --- EN API/backend_api/schemas.py  ---
+
+class ConfigMap(BaseModel):
+    """
+    Representa el mapa de configuración del sistema (valores clave-valor).
+    """
+    VALOR_ALICUOTA: float = Field(..., description="Monto base de la alícuota mensual.")
+    DIA_VENCIMIENTO: int = Field(..., description="Día del mes en que vencen las alícuotas.")
+    PUNTOS_POR_PAGO_A_TIEMPO: int = Field(..., description="Puntos de recompensa por pagar a tiempo.")
+    PORCENTAJE_DESCUENTO: float = Field(..., description="Porcentaje de descuento por pago anticipado/pronto pago (ej: 0.10 = 10%).")

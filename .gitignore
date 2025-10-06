@@ -7,4 +7,3 @@ __pycache__/
 *.db
 *.log
 credentials.json
-.vercel
