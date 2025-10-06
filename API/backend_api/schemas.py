@@ -1,8 +1,7 @@
-# backend_api/schemas.py (FINAL, COMPLETO y CORREGIDO)
-
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+import pytz # Necesario si quieres usar datetime aware objects en los modelos
 
 # --------------------------------------------------------
 # --- 1. Modelos de Autenticación y Usuarios ---
@@ -21,7 +20,7 @@ class TokenResponse(BaseModel):
 
 class TokenData(BaseModel):
     """Datos internos que se almacenan en el payload del JWT (leído por security.py)."""
-    sub: Optional[str] = None  # DNI del usuario (subject)
+    sub: Optional[str] = None  # DNI del usuario (subject)
     ID_CASA: Optional[int] = None # Campo con nombre original de la hoja
     ROL: Optional[str] = None
 
@@ -41,49 +40,59 @@ class CondominoInfo(BaseModel):
     id_casa: str = Field(..., alias="ID_CASA") 
     nombre: str
     email: str
-    celular: str # Importante: Usamos str para aceptar números o cadenas de texto
+    celular: str 
 
 class Movimiento(BaseModel):
-    """Representa un registro en la hoja MOVIMIENTOS (adaptado para el admin)."""
-    # Usamos alias en mayúsculas para mapear con los datos de Google Sheets
+    """
+    Representa un registro en la hoja MOVIMIENTOS. 
+    Nota: Se usa Optional[datetime] porque main.py los convierte a objetos datetime aware.
+    """
     id_movimiento: str = Field(..., alias="ID_MOVIMIENTO")
-    # Los siguientes campos estaban en minúsculas en tu esquema original, los ajustamos al formato SHEET_COLUMN para la API
+    mes_periodo: Optional[str] = Field(None, alias="MES_PERIODO")
     tipo_movimiento: str = Field(..., alias="TIPO_MOVIMIENTO") 
+    concepto: Optional[str] = Field(None, alias="CONCEPTO")
     monto: float = Field(..., alias="MONTO")
     
-    # 🚨 CORRECCIÓN CLAVE: Aceptar objetos datetime
-    fecha_registro: datetime = Field(..., alias="FECHA_REGISTRO")
+    # TIPADO CORREGIDO: datetime (incluye la hora y la zona horaria)
     fecha_vencimiento: Optional[datetime] = Field(None, alias="FECHA_VENCIMIENTO")
-    
-    # Adaptación para compatibilidad de campos que tenías en el esquema MOVIMIENTO (si existen en tu hoja)
-    MES_PERIODO: Optional[str] = None
-    CONCEPTO: Optional[str] = None
-    TIPO_PAGO: Optional[str] = None
+    tipo_pago: Optional[str] = Field(None, alias="TIPO_PAGO")
+    fecha_registro: Optional[datetime] = Field(None, alias="FECHA_REGISTRO")
 
 
 class SemaforoResult(BaseModel):
-    # Campos de Identificación y Contacto (REVISADO)
+    """Estado consolidado del semáforo para una casa, incluyendo datos de contacto."""
     ID_CASA: str = Field(..., alias="ID_CASA")
     nombre_condomino: Optional[str] = Field(None)
     email: Optional[str] = Field(None)
     celular: Optional[str] = Field(None)
 
-    # Campos de Estado de Cuenta (EXISTENTES)
     SALDO: float = Field(..., alias="SALDO")
     ESTADO_SEMAFORO: str = Field(..., alias="ESTADO_SEMAFORO")
     DIAS_ATRASO: int = Field(..., alias="DIAS_ATRASO")
     CUOTAS_PENDIENTES: int = Field(..., alias="CUOTAS_PENDIENTES") 
+    
+    class Config:
+        populate_by_name = True
 
-# 🚨 ESTE MODELO FUE VALIDADO COMO CORRECTO EN EL LOG 🚨
+
 class EstadoCuentaResponse(BaseModel):
     """
-    Respuesta COMPLETA del estado de cuenta, para la ruta /admin/estado-cuenta/{id_casa}.
-    Contiene la info del condómino, el estado semáforo, y la lista detallada de movimientos.
+    Respuesta COMPLETA del estado de cuenta, flexible para Condómino y Admin.
     """
-    status: str # Campo requerido que faltaba en el diccionario de la respuesta
-    condomino: CondominoInfo # Campo requerido que faltaba en el diccionario de la respuesta
-    semaforo_actual: SemaforoResult # Campo requerido que faltaba en el diccionario de la respuesta
+    # CAMPOS ADICIONALES PARA CONDOMINO ENDPOINT (Versión simplificada)
+    id_casa: Optional[int] = Field(None)
+    nombre_condomino: Optional[str] = Field(None)
+    saldo_pendiente: Optional[float] = Field(None)
+    estado_semaforo: Optional[str] = Field(None)
+    dias_atraso: Optional[int] = Field(None)
+    cuotas_pendientes: Optional[int] = Field(None)
+
+    # CAMPOS PRINCIPALES (Para la respuesta ADMIN detallada)
+    status: str = Field("success")
+    condomino: Optional[CondominoInfo] = Field(None) 
+    semaforo_actual: Optional[SemaforoResult] = Field(None) 
     movimientos: List[Movimiento]
+    
 
 # --------------------------------------------------------
 # --- 3. Modelos de Creación (Input para el Admin) ---
@@ -113,7 +122,7 @@ class MultaCreation(BaseModel):
 class AlicuotaCreation(BaseModel):
     """Modelo para registrar la alícuota masiva (Admin input)."""
     MES_PERIODO: str = Field(..., description="Mes y año al que aplica el cargo (ej: 2025-04)")
-    MONTO_ALICUOTA: float = Field(..., gt=0.0)
+    # Campo MONTO_ALICUOTA ELIMINADO: Se obtiene de la hoja CONFIGURACION
     CONCEPTO: str = "Cuota de Mantenimiento Ordinaria" 
 
     @field_validator('MES_PERIODO')
@@ -136,14 +145,3 @@ class SemaforoListResponse(BaseModel):
     status: str
     message: str
     results: List[SemaforoResult]
-
-# --- EN API/backend_api/schemas.py  ---
-
-class ConfigMap(BaseModel):
-    """
-    Representa el mapa de configuración del sistema (valores clave-valor).
-    """
-    VALOR_ALICUOTA: float = Field(..., description="Monto base de la alícuota mensual.")
-    DIA_VENCIMIENTO: int = Field(..., description="Día del mes en que vencen las alícuotas.")
-    PUNTOS_POR_PAGO_A_TIEMPO: int = Field(..., description="Puntos de recompensa por pagar a tiempo.")
-    PORCENTAJE_DESCUENTO: float = Field(..., description="Porcentaje de descuento por pago anticipado/pronto pago (ej: 0.10 = 10%).")

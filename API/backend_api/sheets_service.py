@@ -3,7 +3,7 @@
 import gspread
 import json
 import os
-import base64 # 👈 REQUERIDO: Importación para decodificar Base64
+import base64
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
@@ -13,7 +13,6 @@ class ConnectionError(Exception):
     pass
 
 # --- CONFIGURACIÓN DE CONEXIÓN SEGURA ---
-# Se usará esta variable de entorno para las credenciales en Vercel
 GSPREAD_CREDENTIALS_B64 = os.environ.get("GSPREAD_CREDENTIALS")
 SPREADSHEET_NAME = "gestion_condominio" # Nombre de su hoja de cálculo
 
@@ -27,7 +26,6 @@ class SheetsService:
         try:
             # 1. Verificar si la variable Base64 existe
             if not GSPREAD_CREDENTIALS_B64:
-                # 🛑 ERROR FATAL: No se encontró la variable de entorno
                 raise ConnectionError("ERROR: La variable de entorno 'GSPREAD_CREDENTIALS' no está configurada o está vacía.")
             
             # 2. Decodificar la cadena Base64 a JSON
@@ -35,7 +33,6 @@ class SheetsService:
                 creds_json_string = base64.b64decode(GSPREAD_CREDENTIALS_B64).decode('utf-8')
                 credentials_data = json.loads(creds_json_string)
             except Exception as e:
-                # Error en la decodificación o formato
                 raise ConnectionError(f"ERROR: Falló la decodificación o el formato JSON de GSPREAD_CREDENTIALS. Causa: {e}")
             
             # 3. Conexión al cliente
@@ -50,11 +47,9 @@ class SheetsService:
                 self.sh = None
                 
         except ConnectionError as e:
-            # Captura los errores personalizados (como la falta de la variable)
             print(f"[ERROR DE CONEXIÓN]: {e}")
             self.sh = None
         except Exception as e:
-            # Captura errores inesperados de gspread o json
             print(f"[ERROR INESPERADO al inicializar SheetsService]: {e}")
             self.sh = None
 
@@ -67,7 +62,7 @@ class SheetsService:
         return self.sh.worksheet(sheet_title)
 
     def get_all_records(self, sheet_title: str) -> List[Dict[str, Any]]:
-        """Obtiene todos los datos de una hoja como lista de diccionarios."""
+        """Obtiene todos los datos de una hoja como lista de diccionarios (usa la primera fila como cabecera)."""
         sheet = self.get_sheet(sheet_title)
         return sheet.get_all_records()
 
@@ -93,10 +88,72 @@ class SheetsService:
         
         for row in records:
             if len(row) > casa_id_index and str(row[casa_id_index]).strip() == target_id_str:
+                # Usar la función zip para crear el diccionario
                 record = dict(zip(header, row))
-                filtered_list.append(record)
+                
+                # Conversión de tipos (necesaria porque gspread.get_all_values() retorna solo strings)
+                new_record = {}
+                for k, v in record.items():
+                    if k in ['ID_CASA', 'DIAS_ATRASO', 'CUOTAS_PENDIENTES']:
+                        try:
+                            new_record[k] = int(float(v))
+                        except (ValueError, TypeError):
+                            new_record[k] = v
+                    elif k in ['MONTO', 'SALDO_PENDIENTE']:
+                        try:
+                            new_record[k] = float(v)
+                        except (ValueError, TypeError):
+                            new_record[k] = v
+                    else:
+                        new_record[k] = v
+                
+                filtered_list.append(new_record)
                 
         return filtered_list
+
+    # --- FUNCIÓN CLAVE: LECTURA DE CONFIGURACIÓN ---
+    def get_config_map(self) -> Dict[str, Any]:
+        """
+        Lee todos los pares clave-valor de la hoja CONFIGURACION y retorna un diccionario.
+        Ajusta la conversión de tipos (int, float) para uso en main.py.
+        """
+        try:
+            # Usamos get_all_records, que retorna [{CLAVE: x, VALOR: y}, ...]
+            data = self.get_all_records('CONFIGURACION')
+            config_map = {}
+            
+            for row in data:
+                # Asumimos que las columnas se llaman 'CLAVE' y 'VALOR'
+                clave = str(row.get('CLAVE', '')).strip().upper()
+                value = str(row.get('VALOR', '')).strip()
+                
+                if not clave: continue
+                
+                # Lógica de conversión de tipo
+                try:
+                    # Permite usar comas o puntos como separador decimal para floats
+                    if '.' in value or ',' in value:
+                        # Reemplaza la coma por punto y convierte a float
+                        config_map[clave] = float(value.replace(',', '.'))
+                    elif value.isdigit():
+                        # Convierte a entero si es un número sin decimales
+                        config_map[clave] = int(value)
+                    else:
+                        config_map[clave] = value # Deja como string (ej: 'ACTIVO')
+                except ValueError:
+                    config_map[clave] = value # Deja como string si la conversión falla
+            
+            return config_map
+
+        except Exception as e:
+            print(f"[ERROR SHEETS] No se pudo leer la hoja CONFIGURACION: {e}")
+            # Retorna valores por defecto si falla la lectura (FALLBACK CRÍTICO)
+            return {
+                "VALOR_ALICUOTA": 50.00,
+                "DIA_VENCIMIENTO": 5,
+                "PUNTOS_POR_PAGO_A_TIEMPO": 10,
+                "PORCENTAJE_DESCUENTO": 0.00 
+            }
 
     # --- FUNCIÓN PARA LECTURA DE USUARIO ---
     def get_user_by_id_casa(self, id_casa: int) -> Optional[Dict[str, Any]]:
@@ -104,6 +161,7 @@ class SheetsService:
         try:
             usuarios_data = self.get_all_records('USUARIOS')
             for user in usuarios_data:
+                # Compara el valor después de convertirlo a string (gspread lo podría devolver como int o string)
                 if user.get('ID_CASA') and str(user['ID_CASA']) == str(id_casa):
                     return user
             return None
@@ -113,10 +171,7 @@ class SheetsService:
 
     # --- FUNCIÓN: OBTENER MAPA DE USUARIOS (Para el Admin Panel) ---
     def get_all_users_map(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Obtiene todos los usuarios y los mapea por ID_CASA para una búsqueda rápida,
-        incluyendo Nombre, Email y Celular.
-        """
+        """Retorna un mapa de usuarios {ID_CASA: {DATOS_USUARIO}}."""
         try:
             users_data = self.get_all_records('USUARIOS')
         except Exception:
@@ -124,6 +179,7 @@ class SheetsService:
             
         user_map = {}
         for user in users_data:
+            # Asegura que la clave del mapa sea el ID_CASA en formato string
             casa_id = str(user.get('ID_CASA'))
             if casa_id:
                 user_map[casa_id] = {
@@ -143,10 +199,12 @@ class SheetsService:
             casa_ids = []
             for record in records:
                 casa_id_str = str(record.get('ID_CASA', '')).strip()
+                # Asumimos una columna 'ESTADO' que indica si la casa está ACTIVA o INACTIVA
                 estado = str(record.get('ESTADO', 'ACTIVO')).upper().strip() 
 
                 if casa_id_str and estado == 'ACTIVO':
                     try:
+                        # Conversión a entero (gspread a veces retorna float para números)
                         casa_id = int(float(casa_id_str)) 
                         if casa_id not in casa_ids:
                             casa_ids.append(casa_id)
@@ -163,11 +221,13 @@ class SheetsService:
     def generate_next_movement_id(self) -> str:
         """Genera el siguiente ID de movimiento (M0001, M0002, etc.)."""
         movimientos_sheet = self.get_sheet('MOVIMIENTOS')
+        # Leer la columna 1 (ID_MOVIMIENTO) a partir de la segunda fila
         all_ids = movimientos_sheet.col_values(1)[1:] 
         
         if not all_ids:
             return "M0001"
         
+        # Filtra solo IDs válidos que comienzan con 'M' seguido de dígitos
         valid_ids = [uid for uid in all_ids if uid and uid.startswith('M') and uid[1:].isdigit()]
         
         last_number = 0
@@ -175,20 +235,22 @@ class SheetsService:
             last_number = max([int(uid[1:]) for uid in valid_ids])
             
         next_number = last_number + 1
-        return f"M{next_number:04d}"
+        # Formato con ceros a la izquierda (ej: 0001, 0010)
+        return f"M{next_number:04d}" 
 
     # MÉTODO DE ESCRITURA: Añade una fila
     def append_movement(self, data: List[Any]):
         """Añade una nueva fila al final de la hoja MOVIMIENTOS."""
         movimientos_sheet = self.get_sheet('MOVIMIENTOS')
+        # USER_ENTERED para que no se pierdan los formatos de fecha/número exactos
         movimientos_sheet.append_row(data, value_input_option='USER_ENTERED')
         
     # ----------------------------------------------------------------------
-    # --- MÉTODO ACTUALIZADO: ESCRITURA DE SEMÁFORO (6 COLUMNAS) ---
+    # --- MÉTODOS DE SEMÁFORO (USAN get_all_values() y update()) ---
     # ----------------------------------------------------------------------
     def update_or_append_semaforo(self, id_casa: int, dias_atraso: int, saldo: float, estado: str, cuotas_pendientes: int) -> bool:
         """
-        Busca ID_CASA en ALERTAS_SEMAFORO. Si existe, actualiza (6 columnas A:F); si no, añade.
+        Busca ID_CASA en ALERTAS_SEMAFORO. Si existe, actualiza (A:F); si no, añade.
         """
         sheet = self.get_sheet('ALERTAS_SEMAFORO')
         data = sheet.get_all_values()
@@ -201,18 +263,21 @@ class SheetsService:
         # 1. Buscar fila existente (ID_CASA en la Columna A)
         for i, row in enumerate(records):
             if row and row[0].strip() == target_id_str: 
-                row_index_to_update = i + 2
+                row_index_to_update = i + 2 # +2 porque data[0] es cabecera y el índice de gspread es base 1
                 break
 
-        current_time = datetime.now().strftime('%Y-%m-%d %H:%M')
-        # 2. Preparar nueva data (6 columnas)
+        # Usar la hora local corregida. Como el método get_local_datetime está en main.py, 
+        # aquí usaremos datetime.now() y la corregiremos en main.py si es necesario
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M') 
+        
+        # 2. Preparar nueva data (6 columnas A:F)
         new_data = [
-            target_id_str,        # 1. ID_CASA
-            str(dias_atraso),     # 2. DIAS_ATRASO
-            f"{saldo:.2f}",       # 3. SALDO_PENDIENTE (Formato de moneda)
-            estado,               # 4. ESTADO_SEMAFORO
-            current_time,         # 5. FECHA_ACTUALIZACION
-            str(cuotas_pendientes) # 6. CUOTAS_PENDIENTES (Columna F)
+            target_id_str,        # 1. ID_CASA (A)
+            str(dias_atraso),     # 2. DIAS_ATRASO (B)
+            f"{saldo:.2f}",       # 3. SALDO_PENDIENTE (C)
+            estado,               # 4. ESTADO_SEMAFORO (D)
+            str(cuotas_pendientes), # 5. CUOTAS_PENDIENTES (E)
+            current_time,         # 6. FECHA_ACTUALIZACION (F)
         ]
         
         try:
@@ -228,13 +293,9 @@ class SheetsService:
             print(f"Error al actualizar/añadir semáforo para casa {id_casa}: {e}")
             return False
 
-    # ----------------------------------------------------------------------
-    # --- MÉTODO ACTUALIZADO: LECTURA DE SEMÁFORO (6 COLUMNAS) ---
-    # ----------------------------------------------------------------------
     def get_semaforo_by_casa(self, id_casa: int) -> Optional[Dict[str, Any]]:
         """
         Busca y retorna el estado del semáforo consolidado para una casa específica.
-        Retorna un diccionario con los 6 campos.
         """
         sheet_name = 'ALERTAS_SEMAFORO'
         try:
@@ -249,23 +310,13 @@ class SheetsService:
                 if len(row) >= 6:
                     return {
                         "ID_CASA": row[0],
-                        "DIAS_ATRASO": int(row[1]) if row[1] and row[1].isdigit() else 0,
+                        "DIAS_ATRASO": int(row[1]) if row[1].isdigit() else 0,
                         "SALDO_PENDIENTE": float(row[2]) if row[2] else 0.0,
                         "ESTADO_SEMAFORO": row[3],
-                        "FECHA_ACTUALIZACION": row[4],
-                        "CUOTAS_PENDIENTES": int(row[5]) if row[5] and row[5].isdigit() else 0 
+                        "CUOTAS_PENDIENTES": int(row[4]) if row[4].isdigit() else 0,
+                        "FECHA_ACTUALIZACION": row[5] 
                     }
-                else:
-                    # Permite leer registros antiguos incompletos
-                    return {
-                        "ID_CASA": row[0],
-                        "DIAS_ATRASO": int(row[1]) if row[1] and row[1].isdigit() else 0,
-                        "SALDO_PENDIENTE": float(row[2]) if row[2] else 0.0,
-                        "ESTADO_SEMAFORO": row[3],
-                        "FECHA_ACTUALIZACION": row[4],
-                        "CUOTAS_PENDIENTES": 0 # Valor por defecto
-                    }
-            
+                
             return None # Casa no encontrada
             
         except Exception as e:
@@ -284,38 +335,3 @@ except ConnectionError as e:
 except Exception as e:
     print(f"ERROR INESPERADO en la inicialización global: {e}")
     sheets_service = None
-
-# --- EN API/backend_api/sheets_service.py (MODIFICACIÓN) ---
-
-def get_config_map(self) -> Dict[str, Any]:
-    """
-    Lee todos los pares clave-valor de la hoja CONFIGURACION y retorna un diccionario.
-    """
-    try:
-        data = self.get_all_records('CONFIGURACION')
-        config_map = {}
-        for row in data:
-            # ... (Lógica de conversión de tipo se mantiene igual)
-            value = row.get('VALOR', '').strip()
-            try:
-                if '.' in value or ',' in value:
-                    # Intenta convertir a float (para alícuota y porcentaje de descuento)
-                    config_map[row['CLAVE']] = float(value.replace(',', '.'))
-                else:
-                    # Intenta convertir a int (para día de vencimiento y puntos)
-                    config_map[row['CLAVE']] = int(value)
-            except ValueError:
-                config_map[row['CLAVE']] = value
-        
-        return config_map
-
-    except Exception as e:
-        print(f"[ERROR SHEETS] No se pudo leer la hoja CONFIGURACION: {e}")
-        # Retorna valores por defecto si falla la lectura
-        return {
-            "VALOR_ALICUOTA": 50.00,
-            "DIA_VENCIMIENTO": 5,
-            "PUNTOS_POR_PAGO_A_TIEMPO": 10,
-            # VALOR POR DEFECTO AGREGADO
-            "PORCENTAJE_DESCUENTO": 0.00 
-        }
