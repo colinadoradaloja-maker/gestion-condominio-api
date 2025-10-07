@@ -1,5 +1,3 @@
-# API/backend_api/sheets_service.py
-
 import gspread
 import json
 import os
@@ -17,6 +15,8 @@ GSPREAD_CREDENTIALS_B64 = os.environ.get("GSPREAD_CREDENTIALS")
 SPREADSHEET_NAME = "gestion_condominio" # Nombre de su hoja de cálculo
 
 class SheetsService:
+    
+    MOVEMENTS_SHEET_NAME = 'MOVIMIENTOS'
     
     def __init__(self):
         """Inicializa la conexión a Google Sheets usando credenciales Base64 del entorno."""
@@ -53,7 +53,7 @@ class SheetsService:
             print(f"[ERROR INESPERADO al inicializar SheetsService]: {e}")
             self.sh = None
 
-    # --- MÉTODOS EXISTENTES RESTAURADOS ---
+    # --- MÉTODOS EXISTENTES ---
     
     def get_sheet(self, sheet_title: str) -> gspread.Worksheet:
         """Obtiene una hoja por su título."""
@@ -75,45 +75,38 @@ class SheetsService:
         data = sheet.get_all_values()
         if not data:
             return []
-            
         header = data[0]
         records = data[1:]
-        
         try:
             casa_id_index = header.index('ID_CASA')
         except ValueError:
-            # Algunas hojas como 'MOVIMIENTOS' o 'USUARIOS' deberían tener esta columna
             raise ValueError(f"La hoja '{sheet_title}' no tiene la columna 'ID_CASA'.")
-        
+
         filtered_list = []
         target_id_str = str(id_casa)
-        
+
         for row in records:
             if len(row) > casa_id_index and str(row[casa_id_index]).strip() == target_id_str:
-                # Usar la función zip para crear el diccionario
                 record = dict(zip(header, row))
-                
-                # Conversión de tipos (necesaria porque gspread.get_all_values() retorna solo strings)
+
                 new_record = {}
                 for k, v in record.items():
                     if k in ['ID_CASA', 'DIAS_ATRASO', 'CUOTAS_PENDIENTES']:
                         try:
-                            # gspread puede devolver números como '1.0', así que usamos float antes de int
                             new_record[k] = int(float(v))
                         except (ValueError, TypeError):
                             new_record[k] = v
                     elif k in ['MONTO', 'SALDO_PENDIENTE', 'SALDO']:
                         try:
-                            # Manejar comas si las hubiese
                             v_clean = v.replace(',', '.')
                             new_record[k] = float(v_clean)
                         except (ValueError, TypeError):
                             new_record[k] = v
                     else:
                         new_record[k] = v
-                
+
                 filtered_list.append(new_record)
-                
+
         return filtered_list
 
     # --- FUNCIÓN CLAVE: LECTURA DE CONFIGURACIÓN ---
@@ -123,12 +116,10 @@ class SheetsService:
         Ajusta la conversión de tipos (int, float) para uso en main.py.
         """
         try:
-            # Usamos get_all_records, que retorna [{CLAVE: x, VALOR: y}, ...]
             data = self.get_all_records('CONFIGURACION')
             config_map = {}
             
             for row in data:
-                # Asumimos que las columnas se llaman 'CLAVE' y 'VALOR'
                 clave = str(row.get('CLAVE', '')).strip().upper()
                 value = str(row.get('VALOR', '')).strip()
                 
@@ -136,17 +127,14 @@ class SheetsService:
                 
                 # Lógica de conversión de tipo
                 try:
-                    # Permite usar comas o puntos como separador decimal para floats
                     if '.' in value or ',' in value:
-                        # Reemplaza la coma por punto y convierte a float
                         config_map[clave] = float(value.replace(',', '.'))
                     elif value.isdigit():
-                        # Convierte a entero si es un número sin decimales
                         config_map[clave] = int(value)
                     else:
-                        config_map[clave] = value # Deja como string (ej: 'ACTIVO')
+                        config_map[clave] = value 
                 except ValueError:
-                    config_map[clave] = value # Deja como string si la conversión falla
+                    config_map[clave] = value 
             
             return config_map
 
@@ -166,7 +154,6 @@ class SheetsService:
         try:
             usuarios_data = self.get_all_records('USUARIOS')
             for user in usuarios_data:
-                # Compara el valor después de convertirlo a string (gspread lo podría devolver como int o string)
                 if user.get('ID_CASA') and str(user['ID_CASA']).strip() == str(id_casa):
                     return user
             return None
@@ -184,7 +171,6 @@ class SheetsService:
             
         user_map = {}
         for user in users_data:
-            # Asegura que la clave del mapa sea el ID_CASA en formato string
             casa_id = str(user.get('ID_CASA')).strip()
             if casa_id:
                 user_map[casa_id] = {
@@ -204,13 +190,10 @@ class SheetsService:
             casa_ids = []
             for record in records:
                 casa_id_str = str(record.get('ID_CASA', '')).strip()
-                # Asumimos una columna 'ESTADO' que indica si la casa está ACTIVA o INACTIVA
                 estado = str(record.get('ESTADO', 'ACTIVO')).upper().strip() 
 
-                # Procesa el ID 0 si su estado es 'ACTIVO'
                 if casa_id_str and estado == 'ACTIVO':
                     try:
-                        # Conversión a entero (gspread a veces retorna float para números)
                         casa_id = int(float(casa_id_str)) 
                         if casa_id not in casa_ids:
                             casa_ids.append(casa_id)
@@ -226,7 +209,7 @@ class SheetsService:
     # MÉTODO DE ESCRITURA: Genera el ID en formato Mxxxx
     def generate_next_movement_id(self) -> str:
         """Genera el siguiente ID de movimiento (M0001, M0002, etc.)."""
-        movimientos_sheet = self.get_sheet('MOVIMIENTOS')
+        movimientos_sheet = self.get_sheet(self.MOVEMENTS_SHEET_NAME)
         # Leer la columna 1 (ID_MOVIMIENTO) a partir de la segunda fila
         all_ids = movimientos_sheet.col_values(1)[1:] 
         
@@ -241,16 +224,32 @@ class SheetsService:
             last_number = max([int(uid[1:]) for uid in valid_ids])
             
         next_number = last_number + 1
-        # Formato con ceros a la izquierda (ej: 0001, 0010)
         return f"M{next_number:04d}" 
 
-    # MÉTODO DE ESCRITURA: Añade una fila
-    def append_movement(self, data: List[Any]):
-        """Añade una nueva fila al final de la hoja MOVIMIENTOS."""
-        movimientos_sheet = self.get_sheet('MOVIMIENTOS')
-        # USER_ENTERED para que no se pierdan los formatos de fecha/número exactos
-        movimientos_sheet.append_row(data, value_input_option='USER_ENTERED')
+    # MÉTODO DE ESCRITURA: Añade una fila (CORREGIDO Y UBICADO)
+    def append_movement(self, data_row: list):
+        """Añade una fila a la hoja MOVIMIENTOS, asegurando la inserción en el rango A:J (10 columnas)."""
+        # Rango de inserción ajustado a 10 columnas (A:J)
+        range_name = f'{self.MOVEMENTS_SHEET_NAME}!A:J' 
         
+        body = {
+            'values': [data_row]
+        }
+        
+        # Obtenemos la hoja para poder usar el ID del spreadsheet
+        movimientos_sheet = self.get_sheet(self.MOVEMENTS_SHEET_NAME)
+        
+        # Usamos el cliente del gspread para la llamada a la API
+        result = movimientos_sheet.client.spreadsheets().values().append(
+            spreadsheetId=movimientos_sheet.spreadsheet.id, # Usamos el ID del spreadsheet
+            range=range_name,
+            valueInputOption='USER_ENTERED', 
+            insertDataOption='INSERT_ROWS',
+            body=body
+        ).execute()
+        
+        return result
+    
     # ----------------------------------------------------------------------
     # --- MÉTODOS DE SEMÁFORO (USAN get_all_values() y update()) ---
     # ----------------------------------------------------------------------
@@ -280,11 +279,11 @@ class SheetsService:
         # ORDEN DE COLUMNAS: A, B, C, D, E, F
         new_data = [
             target_id_str,          # 1. ID_CASA (A)
-            f"{saldo:.2f}",         # 2. SALDO_PENDIENTE (B) <-- Ajustado para ser el SALDO
-            str(dias_atraso),       # 3. DIAS_ATRASO (C)    <-- Ajustado
-            estado,                 # 4. ESTADO_SEMAFORO (D)
-            str(cuotas_pendientes), # 5. CUOTAS_PENDIENTES (E)
-            current_time,           # 6. FECHA_ACTUALIZACION (F)
+            f"{saldo:.2f}",        # 2. SALDO (B)
+            str(dias_atraso),      # 3. DIAS_ATRASO (C)
+            estado,                # 4. ESTADO_SEMAFORO (D)
+            str(cuotas_pendientes),# 5. CUOTAS_PENDIENTES (E)
+            current_time,          # 6. FECHA_ACTUALIZACION (F)
         ]
         
         try:
@@ -303,14 +302,12 @@ class SheetsService:
     def get_semaforo_by_casa(self, id_casa: int) -> Optional[Dict[str, Any]]:
         """
         Busca y retorna el estado del semáforo consolidado para una casa específica.
-        Mapeo ajustado para el orden de 6 columnas: ID_CASA, SALDO, DIAS_ATRASO, ESTADO, CUOTAS, FECHA
+        Mapeo ajustado para el orden de 6 columnas.
         """
         sheet_name = 'ALERTAS_SEMAFORO'
         try:
             sheet = self.get_sheet(sheet_name)
             data = sheet.get_all_values()
-            
-            # Cabecera esperada (para referencia): ['ID_CASA', 'SALDO', 'DIAS_ATRASO', 'ESTADO_SEMAFORO', 'CUOTAS_PENDIENTES', 'FECHA_ACTUALIZACION']
             
             for row in data[1:]: # Ignora la fila de headers
                 if not row or str(row[0]).strip() != str(id_casa):
@@ -320,11 +317,11 @@ class SheetsService:
                 if len(row) >= 6:
                     return {
                         "ID_CASA": row[0],
-                        "SALDO": float(row[1]) if row[1] else 0.0, # Columna B: SALDO
-                        "DIAS_ATRASO": int(row[2]) if row[2].isdigit() else 0, # Columna C: DIAS_ATRASO
-                        "ESTADO_SEMAFORO": row[3], # Columna D: ESTADO
-                        "CUOTAS_PENDIENTES": int(row[4]) if row[4].isdigit() else 0, # Columna E: CUOTAS
-                        "FECHA_ACTUALIZACION": row[5] # Columna F: FECHA
+                        "SALDO": float(row[1]) if row[1] else 0.0,
+                        "DIAS_ATRASO": int(row[2]) if row[2].isdigit() else 0,
+                        "ESTADO_SEMAFORO": row[3],
+                        "CUOTAS_PENDIENTES": int(row[4]) if row[4].isdigit() else 0,
+                        "FECHA_ACTUALIZACION": row[5]
                     }
                 
             return None # Casa no encontrada
@@ -335,7 +332,6 @@ class SheetsService:
 
 # Instancia global para usar en FastAPI
 try:
-    # Intenta inicializar el servicio. Si falla por credenciales, sheets_service será None.
     sheets_service = SheetsService()
     if sheets_service.sh is None:
         sheets_service = None

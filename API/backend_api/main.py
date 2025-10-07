@@ -699,56 +699,41 @@ def get_estado_cuenta(id_casa: int, payload: schemas.TokenData = Depends(get_cur
 # ----------------- 7. ENDPOINTS DE TESORERÍA (ADMIN/TESORERIA) -----------------
 # ----------------------------------------------------------------------
 @app.post("/admin/tesoreria/transaccion", tags=["Admin", "Tesorería"], 
-        dependencies=[Depends(require_admin_or_tesoreria)])
+    dependencies=[Depends(require_admin_or_tesoreria)])
 def register_tesoreria_transaccion(
     data: schemas.TesoreriaCreation, 
     payload: schemas.TokenData = Depends(get_current_user_payload)
 ):
-    """
-    Registra un INGRESO o EGRESO al saldo de Tesorería (ID_CASA=0).
-    El campo TIPO_MOVIMIENTO_FINANCIERO es obligatorio para auditoría.
-    """
-    if sheets_service is None:
-        raise HTTPException(status_code=503, detail="Servicio de base de datos no disponible.")
-    
+    # ... (código previo de try/except y lógica de MONTO)
     try:
         next_id = sheets_service.generate_next_movement_id()
-        fecha_registro = get_local_datetime().strftime('%Y-%m-%d %H:%M')
+        fecha_registro = get_local_datetime().strftime('%Y-%m-%d %H:%M') 
         mes_periodo = get_local_datetime().strftime('%Y-%m') 
         
-        # 1. Determinar el MONTO final con el signo correcto
-        # Se usa TIPO_MOVIMIENTO_FINANCIERO para el signo.
+        #1. Determinar el MONTO final con el signo correcto
         monto_final = abs(data.MONTO)
-        # El campo para el signo es TIPO_MOVIMIENTO_FINANCIERO (que es el ajuste correcto)
         if data.TIPO_MOVIMIENTO_FINANCIERO.upper() == "EGRESO":
             monto_final = -abs(data.MONTO) 
-        
-        # 2. Datos a escribir en la hoja MOVIMIENTOS
-        # ORDEN DE COLUMNAS (10 campos): ID, ID_CASA, MES_PERIODO, TIPO_MOV, CONCEPTO, MONTO, FECHA_VENCIMIENTO, TIPO_PAGO, TIPO_MOVIMIENTO_FINANCIERO, FECHA_REGISTRO
+        #2. Datos a escribir en la hoja MOVIMIENTOS (¡10 COLUMNAS!)
+        #ORDEN: ID, ID_CASA, MES, TIPO_MOV, CONCEPTO, MONTO, FECHA_VENCIMIENTO, TIPO_PAGO, FECHA_REGISTRO, TIPO_MOV_FINANCIERO
         new_row = [
-            next_id, 
-            "0", # ID_CASA
-            mes_periodo,
-            # Usamos TIPO_MOVIMIENTO (Valor de negocio: Cuota/Gasto)
-            data.TIPO_MOVIMIENTO.upper(), # Columna 4: TIPO_MOVIMIENTO
+            next_id, # Columna 1
+            "0", # Columna 2: ID_CASA
+            mes_periodo, # Columna 3: MES_PERIODO
+            data.TIPO_MOVIMIENTO.upper(), # Columna 4: TIPO_MOVIMIENTO (Negocio)
             data.CONCEPTO, # Columna 5: CONCEPTO
             monto_final, # Columna 6: MONTO (con signo)
-            "", # Columna 7: FECHA_VENCIMIENTO (Vacío)
-            # Usamos TIPO_PAGO (Forma de pago)
-            data.TIPO_PAGO.upper(), # Columna 8: TIPO_PAGO 
-            # Incluimos el nuevo campo TIPO_MOVIMIENTO_FINANCIERO (Ingreso/Egreso)
-            data.TIPO_MOVIMIENTO_FINANCIERO.upper(), # Columna 9: TIPO_MOVIMIENTO_FINANCIERO
-            fecha_registro # Columna 10: FECHA_REGISTRO
+            "", # Columna 7: FECHA_VENCIMIENTO (Vacío para Tesorería)
+            data.TIPO_PAGO.upper(), # Columna 8: TIPO_PAGO
+            fecha_registro, # Columna 9: FECHA_REGISTRO
+            data.TIPO_MOVIMIENTO_FINANCIERO.upper() # Columna 10: TIPO_MOVIMIENTO_FINANCIERO
         ]
-        
+
         sheets_service.append_movement(new_row)
-        
-        return {"status": "success", "message": f"Transacción de Tesorería registrada con éxito. ID: {next_id}", "ID_MOVIMIENTO": next_id}
-        
+        return {"status": "success", "message": f"Transacción registrada correctamente. ID: {next_id}", "ID_MOVIMIENTO": next_id}
     except Exception as e:
-        print(f"[ERROR ESCRITURA TESORERIA]: {e}")
+        print(f"[ERROR TESORERIA TRANSACCION]: {e}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Error al registrar la transacción de Tesorería en la base de datos.")
-# ----------------------------------------------------------------------
+        raise HTTPException(status_code=500, detail="Error al registrar la transacción de tesorería.")
 # ----------------- FIN DE ENDPOINTS -----------------
 # ----------------------------------------------------------------------
