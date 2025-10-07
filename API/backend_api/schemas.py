@@ -1,7 +1,12 @@
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 import pytz # Necesario si quieres usar datetime aware objects en los modelos
+
+# Definir la zona horaria: Guayaquil = GTM-5 (UTC-5)
+# Aunque no se usa directamente aquí, es buena práctica mantener la referencia si se necesita validar fechas.
+LOCAL_TIMEZONE = pytz.timezone('America/Guayaquil') 
+
 
 # --------------------------------------------------------
 # --- 1. Modelos de Autenticación y Usuarios ---
@@ -36,16 +41,18 @@ class User(BaseModel):
 # --------------------------------------------------------
 
 class CondominoInfo(BaseModel):
-    """Información básica del condómino (Nombre, Email, Celular)."""
+    """Información básica del condómino o de Tesorería (ID_CASA=0)."""
     id_casa: str = Field(..., alias="ID_CASA") 
     nombre: str
     email: str
     celular: str 
+    
+    class Config:
+        populate_by_name = True
 
 class Movimiento(BaseModel):
     """
     Representa un registro en la hoja MOVIMIENTOS. 
-    Nota: Se usa Optional[datetime] porque main.py los convierte a objetos datetime aware.
     """
     id_movimiento: str = Field(..., alias="ID_MOVIMIENTO")
     mes_periodo: Optional[str] = Field(None, alias="MES_PERIODO")
@@ -57,6 +64,9 @@ class Movimiento(BaseModel):
     fecha_vencimiento: Optional[datetime] = Field(None, alias="FECHA_VENCIMIENTO")
     tipo_pago: Optional[str] = Field(None, alias="TIPO_PAGO")
     fecha_registro: Optional[datetime] = Field(None, alias="FECHA_REGISTRO")
+
+    class Config:
+        populate_by_name = True
 
 
 class SemaforoResult(BaseModel):
@@ -77,21 +87,28 @@ class SemaforoResult(BaseModel):
 
 class EstadoCuentaResponse(BaseModel):
     """
-    Respuesta COMPLETA del estado de cuenta, flexible para Condómino y Admin.
+    Respuesta COMPLETA del estado de cuenta, unificada para Condómino y Admin.
+    
+    NOTA: El endpoint de Condómino usa solo los campos sueltos (id_casa, saldo_pendiente, etc.) 
+    mientras que el de Admin usa la estructura completa (condomino, semaforo_actual).
     """
-    # CAMPOS ADICIONALES PARA CONDOMINO ENDPOINT (Versión simplificada)
+    # CAMPOS PRINCIPALES (Para la respuesta ADMIN detallada y el resumen del Condómino)
+    status: str = Field("success")
+    movimientos: List[Movimiento]
+    
+    # Detalle de la Casa/Tesorería (Usado en el endpoint ADMIN)
+    condomino: Optional[CondominoInfo] = Field(None) 
+    
+    # Estado Consolidado (Usado en el endpoint ADMIN)
+    semaforo_actual: Optional[SemaforoResult] = Field(None) 
+    
+    # Campos sueltos (Usados principalmente en el endpoint CONDOMINO por simplicidad)
     id_casa: Optional[int] = Field(None)
     nombre_condomino: Optional[str] = Field(None)
     saldo_pendiente: Optional[float] = Field(None)
     estado_semaforo: Optional[str] = Field(None)
     dias_atraso: Optional[int] = Field(None)
     cuotas_pendientes: Optional[int] = Field(None)
-
-    # CAMPOS PRINCIPALES (Para la respuesta ADMIN detallada)
-    status: str = Field("success")
-    condomino: Optional[CondominoInfo] = Field(None) 
-    semaforo_actual: Optional[SemaforoResult] = Field(None) 
-    movimientos: List[Movimiento]
     
 
 # --------------------------------------------------------
@@ -100,7 +117,7 @@ class EstadoCuentaResponse(BaseModel):
 
 class PagoCreation(BaseModel):
     """Modelo para registrar un PAGO (Admin input)."""
-    ID_CASA: int = Field(..., gt=0)
+    ID_CASA: int = Field(..., gt=0, description="ID de la casa que realiza el pago.")
     MONTO: float = Field(..., gt=0.0)
     CONCEPTO: str
     TIPO_PAGO: str = Field(..., description="Efectivo, Transferencia, etc.")
@@ -115,14 +132,13 @@ class PagoCreation(BaseModel):
 
 class MultaCreation(BaseModel):
     """Modelo para registrar una MULTA (Admin input)."""
-    ID_CASA: int = Field(..., gt=0)
+    ID_CASA: int = Field(..., gt=0, description="ID de la casa que recibe la multa.")
     MONTO: float = Field(..., gt=0.0)
     CONCEPTO: str
 
 class AlicuotaCreation(BaseModel):
     """Modelo para registrar la alícuota masiva (Admin input)."""
     MES_PERIODO: str = Field(..., description="Mes y año al que aplica el cargo (ej: 2025-04)")
-    # Campo MONTO_ALICUOTA ELIMINADO: Se obtiene de la hoja CONFIGURACION
     CONCEPTO: str = "Cuota de Mantenimiento Ordinaria" 
 
     @field_validator('MES_PERIODO')
@@ -134,6 +150,18 @@ class AlicuotaCreation(BaseModel):
             raise ValueError('MES_PERIODO debe tener el formato AAAA-MM (ej: 2025-04).')
         return v
     
+class TesoreriaCreation(BaseModel):
+    """Modelo para registrar cualquier movimiento (Ingreso o Egreso) a la Tesorería (ID_CASA 0)."""
+    TIPO_TRANSACCION: Literal["INGRESO", "EGRESO"] = Field(..., description="Debe ser 'INGRESO' o 'EGRESO'.")
+    MONTO: float = Field(..., gt=0.0, description="Monto en valor absoluto.")
+    CONCEPTO: str
+    
+    # Se elimina el validator redundante ya que usamos Literal
+    
+# --------------------------------------------------------
+# --- 4. Modelos de Respuesta de Procesos y Tesorería ---
+# --------------------------------------------------------
+
 class SemaforoUpdateResponse(BaseModel):
     """Respuesta del administrador al actualizar el semáforo."""
     status: str
@@ -146,20 +174,8 @@ class SemaforoListResponse(BaseModel):
     message: str
     results: List[SemaforoResult]
 
-# En la sección 3. Modelos de Creación (Input para el Admin)
-
-# ... (Mantener PagoCreation, MultaCreation, AlicuotaCreation)
-
-class TesoreriaCreation(BaseModel):
-    """Modelo para registrar cualquier movimiento (Ingreso o Egreso) a la Tesorería (ID_CASA 0)."""
-    TIPO_TRANSACCION: str = Field(..., description="Debe ser 'INGRESO' o 'EGRESO'.")
-    MONTO: float = Field(..., gt=0.0, description="Monto en valor absoluto.")
-    CONCEPTO: str
-    
-    @field_validator('TIPO_TRANSACCION')
-    @classmethod
-    def validate_tipo_transaccion(cls, v: str):
-        clean_v = v.strip().upper() 
-        if clean_v not in ['INGRESO', 'EGRESO']:
-            raise ValueError("TIPO_TRANSACCION debe ser 'INGRESO' o 'EGRESO'.")
-        return clean_v
+class TesoreriaEstadoResponse(BaseModel):
+    """Modelo de respuesta para el saldo de la Tesorería (ID_CASA=0)."""
+    status: str = "success"
+    message: str = "Saldo calculado con éxito."
+    saldo_disponible: float

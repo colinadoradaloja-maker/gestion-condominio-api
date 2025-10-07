@@ -3,7 +3,7 @@ import pytz
 from datetime import datetime, date, timedelta
 from typing import List, Dict, Any, Optional
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, status
 
 # --- Importaciones Consolidadas ---
 from API.backend_api import schemas
@@ -38,6 +38,18 @@ def get_local_datetime() -> datetime:
 # --- DEPENDENCIAS DE ROL ---
 require_condomino = RoleChecker(required_role="CONDOMINO")
 require_admin = RoleChecker(required_role="ADMIN")
+
+# NUEVA DEPENDENCIA: Permite acceso a roles ADMIN o TESORERIA
+def require_admin_or_tesoreria(payload: schemas.TokenData = Depends(get_current_user_payload)):
+    """
+    Dependencia que verifica si el usuario tiene rol ADMIN o TESORERIA.
+    """
+    if payload.ROL.upper() not in ["ADMIN", "TESORERIA"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acceso denegado. Se requiere el rol: ADMIN o TESORERIA."
+        )
+    return True # Permiso concedido
 
 # ----------------------------------------------------------------------
 # ----------------- 1. ENDPOINT PRINCIPAL: AUTENTICACIÓN -----------------
@@ -201,7 +213,7 @@ def get_condomino_estado_cuenta(
              dependencies=[Depends(require_admin)])
 def register_pago(pago_data: schemas.PagoCreation, payload: schemas.TokenData = Depends(get_current_user_payload)):
     """
-    Registra un PAGO. El monto es NEGATIVO.
+    Registra un PAGO. El monto es NEGATIVO (disminuye la deuda de la casa, aumenta el efectivo de Tesorería).
     """
     if sheets_service is None:
         raise HTTPException(status_code=503, detail="Servicio de base de datos no disponible.")
@@ -240,7 +252,7 @@ def register_pago(pago_data: schemas.PagoCreation, payload: schemas.TokenData = 
              dependencies=[Depends(require_admin)])
 def register_multa(multa_data: schemas.MultaCreation, payload: schemas.TokenData = Depends(get_current_user_payload)):
     """
-    Registra una MULTA. El monto es POSITIVO.
+    Registra una MULTA. El monto es POSITIVO (aumenta la deuda de la casa).
     """
     if sheets_service is None:
         raise HTTPException(status_code=503, detail="Servicio de base de datos no disponible.")
@@ -359,12 +371,13 @@ def actualizar_semaforo(payload: schemas.TokenData = Depends(get_current_user_pa
     
     try:
         # 1. Obtener datos para consolidación (MÁXIMO DE LECTURAS)
-        casa_ids = sheets_service.get_all_casa_ids() 
+        # Se incluye ID_CASA 0 en get_all_casa_ids(), pero se excluye en el cálculo de mora/semáforo
+        casa_ids = [id for id in sheets_service.get_all_casa_ids() if id != 0] 
         movimientos_data = sheets_service.get_all_records('MOVIMIENTOS')
         user_map = sheets_service.get_all_users_map() # Optimizador: Lee todos los usuarios de golpe
         
         if not casa_ids:
-            return schemas.SemaforoUpdateResponse(status="warning", message="No hay casas registradas.", results=[])
+            return schemas.SemaforoUpdateResponse(status="warning", message="No hay casas registradas (excluyendo Tesorería).", results=[])
         
         results = []
         hoy = date.today()
@@ -406,6 +419,7 @@ def actualizar_semaforo(payload: schemas.TokenData = Depends(get_current_user_pa
                         
                     fecha_venc_str = m.get('FECHA_VENCIMIENTO', '')
                     
+                    # Solo evaluamos ALICUOTA como deuda morosa
                     if tipo == 'ALICUOTA' and monto > 0 and fecha_venc_str:
                         try:
                             fecha_vencimiento = datetime.strptime(fecha_venc_str, '%Y-%m-%d').date()
@@ -428,7 +442,8 @@ def actualizar_semaforo(payload: schemas.TokenData = Depends(get_current_user_pa
                     else:
                         estado_semaforo = "AMARILLO"
                 else:
-                    estado_semaforo = "AMARILLO"
+                    # Caso de saldo > 0.01 pero sin alícuotas vencidas (Ej: solo tiene multas recientes no vencidas)
+                    estado_semaforo = "AMARILLO" 
             
             
             # d. Actualizar la hoja ALERTAS_SEMAFORO (1 SOLA ESCRITURA POR CASA)
@@ -484,6 +499,7 @@ def get_semaforo_list(payload: schemas.TokenData = Depends(get_current_user_payl
         user_map = sheets_service.get_all_users_map()
         
         # 2. Obtener datos consolidados del semáforo
+        # Usamos get_all_records() porque los datos ya están consolidados
         semaforo_data = sheets_service.get_all_records('ALERTAS_SEMAFORO')
         
         if not semaforo_data:
@@ -499,6 +515,10 @@ def get_semaforo_list(payload: schemas.TokenData = Depends(get_current_user_payl
             try:
                 # Asegurando que los valores clave se interpreten correctamente
                 id_casa = str(record.get('ID_CASA', ''))
+                # Omitir el ID_CASA 0 de la lista visible del semáforo (no es un condómino deudor)
+                if id_casa == '0':
+                    continue 
+                    
                 dias_atraso = int(record.get('DIAS_ATRASO', 0) or 0)
                 saldo = float(record.get('SALDO_PENDIENTE', 0.0) or 0.0)
                 cuotas_pendientes = int(record.get('CUOTAS_PENDIENTES', 0) or 0)
@@ -547,7 +567,7 @@ def get_semaforo_list(payload: schemas.TokenData = Depends(get_current_user_payl
              response_model=schemas.EstadoCuentaResponse)
 def get_estado_cuenta(id_casa: int, payload: schemas.TokenData = Depends(get_current_user_payload)):
     """
-    Obtiene el estado completo de una casa, incluyendo:
+    Obtiene el estado completo de una casa (o Tesorería), incluyendo:
     1. Información del condómino (Contacto).
     2. Estado actual del semáforo.
     3. Lista de todos sus movimientos (cargos y abonos).
@@ -561,9 +581,10 @@ def get_estado_cuenta(id_casa: int, payload: schemas.TokenData = Depends(get_cur
         if not user_info:
             raise HTTPException(status_code=404, detail=f"Casa {id_casa} no encontrada en la base de datos de usuarios.")
         
-        # 2. Obtener el estado del semáforo consolidado
-        semaforo_info = sheets_service.get_semaforo_by_casa(id_casa)
-        if not semaforo_info:
+        # 2. Obtener el estado del semáforo consolidado (solo para casas > 0)
+        semaforo_info = sheets_service.get_semaforo_by_casa(id_casa) if id_casa != 0 else {}
+        
+        if not semaforo_info and id_casa != 0:
             # Si no hay semáforo consolidado, se inicializa con valores seguros
             semaforo_info = {
                 "ID_CASA": str(id_casa),
@@ -579,8 +600,10 @@ def get_estado_cuenta(id_casa: int, payload: schemas.TokenData = Depends(get_cur
         
         # Mapear los movimientos al esquema
         movimientos_list = []
+        saldo_calculado = 0.0 # Calcular saldo aquí para Tesorería (ID_CASA=0)
         for m in movimientos_data:
             monto_val = float(m.get('MONTO', 0.0) or 0.0) 
+            saldo_calculado += monto_val # Suma el saldo para el reporte (cargos POS, pagos NEG)
             
             # Formateo y validación de fechas
             fecha_vencimiento: Optional[datetime] = None
@@ -627,24 +650,40 @@ def get_estado_cuenta(id_casa: int, payload: schemas.TokenData = Depends(get_cur
             celular=celular_str,
         )
         
-        # Reusar el SemáforoResult para la estructura de estado consolidado
-        semaforo_result = schemas.SemaforoResult(
-            ID_CASA=str(id_casa),
-            SALDO=round(semaforo_info.get('SALDO_PENDIENTE', 0.0), 2),
-            ESTADO_SEMAFORO=semaforo_info.get('ESTADO_SEMAFORO', 'VERDE'),
-            DIAS_ATRASO=semaforo_info.get('DIAS_ATRASO', 0),
-            CUOTAS_PENDIENTES=semaforo_info.get('CUOTAS_PENDIENTES', 0),
-            nombre_condomino=condomino_data.nombre,
-            email=condomino_data.email,
-            celular=condomino_data.celular
-        )
+        # Reusar el SemáforoResult para la estructura de estado consolidado (Solo si no es Tesorería)
+        if id_casa != 0:
+            semaforo_result = schemas.SemaforoResult(
+                ID_CASA=str(id_casa),
+                SALDO=round(semaforo_info.get('SALDO_PENDIENTE', 0.0), 2),
+                ESTADO_SEMAFORO=semaforo_info.get('ESTADO_SEMAFORO', 'VERDE'),
+                DIAS_ATRASO=semaforo_info.get('DIAS_ATRASO', 0),
+                CUOTAS_PENDIENTES=semaforo_info.get('CUOTAS_PENDIENTES', 0),
+                nombre_condomino=condomino_data.nombre,
+                email=condomino_data.email,
+                celular=condomino_data.celular
+            )
+            saldo_final = semaforo_result.SALDO
+        else:
+            # Para la Tesorería, el 'semaforo_actual' es la información del usuario
+            semaforo_result = schemas.SemaforoResult(
+                ID_CASA="0",
+                SALDO=round(saldo_calculado, 2), # El saldo real de Tesorería se calcula aquí
+                ESTADO_SEMAFORO="N/A",
+                DIAS_ATRASO=0,
+                CUOTAS_PENDIENTES=0,
+                nombre_condomino="Tesorería/Administración",
+                email=condomino_data.email,
+                celular=condomino_data.celular
+            )
+            saldo_final = semaforo_result.SALDO
         
         # 5. Respuesta final
         return schemas.EstadoCuentaResponse(
             status="success",
             condomino=condomino_data,
             semaforo_actual=semaforo_result,
-            movimientos=movimientos_list
+            movimientos=movimientos_list,
+            saldo_pendiente=round(saldo_final, 2)
         )
 
     except HTTPException as e:
@@ -655,11 +694,11 @@ def get_estado_cuenta(id_casa: int, payload: schemas.TokenData = Depends(get_cur
         raise HTTPException(status_code=500, detail="Error interno al obtener el estado de cuenta.")
 
 # ----------------------------------------------------------------------
-# ----------------- 4. ENDPOINTS DE TESORERÍA (ADMIN) -----------------
+# ----------------- 7. ENDPOINTS DE TESORERÍA (ADMIN/TESORERIA) -----------------
 # ----------------------------------------------------------------------
 
 @app.post("/admin/tesoreria/transaccion", tags=["Admin", "Tesorería"], 
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_admin_or_tesoreria)]) # <--- DEPENDENCIA ACTUALIZADA
 def register_tesoreria_transaccion(
     data: schemas.TesoreriaCreation, 
     payload: schemas.TokenData = Depends(get_current_user_payload)
@@ -707,49 +746,37 @@ def register_tesoreria_transaccion(
 
 
 @app.get("/admin/tesoreria/estado", tags=["Admin", "Tesorería"], 
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_admin_or_tesoreria)], # <--- DEPENDENCIA ACTUALIZADA
+             response_model=schemas.TesoreriaEstadoResponse) # <--- RESPONSE_MODEL AÑADIDO
 def get_tesoreria_estado(payload: schemas.TokenData = Depends(get_current_user_payload)):
     """
-    Calcula el saldo real del fondo de Tesorería del condominio.
-    Suma Ingresos Reales (PAGOS) y resta Egresos Reales (EGRESOS de ID_CASA=0).
+    Calcula el saldo real del fondo de Tesorería del condominio (ID_CASA=0).
     """
     if sheets_service is None:
         raise HTTPException(status_code=503, detail="Servicio de base de datos no disponible.")
 
     try:
-        # 1. Obtener TODOS los movimientos
-        movimientos_data = sheets_service.get_all_records('MOVIMIENTOS')
+        # 1. Obtener solo los movimientos de la Tesorería (ID_CASA=0)
+        movimientos_data = sheets_service.get_records_by_casa_id('MOVIMIENTOS', 0)
         
-        saldo_tesoreria = 0.0
+        saldo_disponible = 0.0
         
         for record in movimientos_data:
-            monto = 0.0
             try:
-                monto = float(record.get('MONTO', 0.0))
-            except (ValueError, TypeError):
+                # Suma/resta todos los movimientos de la Tesorería.
+                # 'PAGO', 'INGRESO' son positivos (dinero entrando al fondo).
+                # 'EGRESO' es negativo (dinero saliendo del fondo).
+                saldo_disponible += float(record.get('MONTO', 0.0))
+            except (ValueError, KeyError, TypeError):
                 continue
-            
-            tipo = record.get('TIPO_MOVIMIENTO', '').upper()
-            casa_id_str = str(record.get('ID_CASA', ''))
-            
-            # Condición de Tesorería:
-            # A. Ingresos Reales: Pagos de cualquier casa (monto negativo, pero entra dinero al condominio)
-            if tipo == 'PAGO':
-                # El MONTO en la hoja es NEGATIVO (-50), pero es un INGRESO real. Se suma el valor ABSOLUTO.
-                saldo_tesoreria += abs(monto)
-                
-            # B. Egresos y otros Ingresos de la Administración (ID_CASA 0)
-            elif casa_id_str == '0':
-                # EGRESO (monto negativo) o INGRESO (monto positivo). Se suma tal cual.
-                saldo_tesoreria += monto
-
-        return {
-            "status": "success",
-            "message": "Estado de la Tesorería (Flujo de Caja Real)",
-            "saldo_disponible": round(saldo_tesoreria, 2)
-        }
-
+        
+        return schemas.TesoreriaEstadoResponse(
+            status="success",
+            message="Saldo calculado con éxito.",
+            saldo_disponible=round(saldo_disponible, 2)
+        )
+        
     except Exception as e:
-        print(f"[ERROR TESORERIA ESTADO]: {e}")
+        print(f"[ERROR FATAL ESTADO TESORERIA]: {e}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Error al calcular el estado de Tesorería.")
+        raise HTTPException(status_code=500, detail="Error interno al calcular el estado de Tesorería.")

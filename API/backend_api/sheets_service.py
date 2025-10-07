@@ -69,6 +69,7 @@ class SheetsService:
     def get_records_by_casa_id(self, sheet_title: str, id_casa: int) -> List[Dict[str, Any]]:
         """
         Obtiene todos los registros de una hoja filtrados por ID_CASA.
+        Este método soporta ID_CASA = 0 para la Tesorería.
         """
         sheet = self.get_sheet(sheet_title)
         data = sheet.get_all_values()
@@ -81,6 +82,7 @@ class SheetsService:
         try:
             casa_id_index = header.index('ID_CASA')
         except ValueError:
+            # Algunas hojas como 'MOVIMIENTOS' o 'USUARIOS' deberían tener esta columna
             raise ValueError(f"La hoja '{sheet_title}' no tiene la columna 'ID_CASA'.")
         
         filtered_list = []
@@ -96,12 +98,15 @@ class SheetsService:
                 for k, v in record.items():
                     if k in ['ID_CASA', 'DIAS_ATRASO', 'CUOTAS_PENDIENTES']:
                         try:
+                            # gspread puede devolver números como '1.0', así que usamos float antes de int
                             new_record[k] = int(float(v))
                         except (ValueError, TypeError):
                             new_record[k] = v
-                    elif k in ['MONTO', 'SALDO_PENDIENTE']:
+                    elif k in ['MONTO', 'SALDO_PENDIENTE', 'SALDO']:
                         try:
-                            new_record[k] = float(v)
+                            # Manejar comas si las hubiese
+                            v_clean = v.replace(',', '.')
+                            new_record[k] = float(v_clean)
                         except (ValueError, TypeError):
                             new_record[k] = v
                     else:
@@ -157,12 +162,12 @@ class SheetsService:
 
     # --- FUNCIÓN PARA LECTURA DE USUARIO ---
     def get_user_by_id_casa(self, id_casa: int) -> Optional[Dict[str, Any]]:
-        """Busca y retorna el registro de usuario (incluyendo NOMBRE) para una casa."""
+        """Busca y retorna el registro de usuario (incluyendo NOMBRE) para una casa. Soporta ID_CASA=0."""
         try:
             usuarios_data = self.get_all_records('USUARIOS')
             for user in usuarios_data:
                 # Compara el valor después de convertirlo a string (gspread lo podría devolver como int o string)
-                if user.get('ID_CASA') and str(user['ID_CASA']) == str(id_casa):
+                if user.get('ID_CASA') and str(user['ID_CASA']).strip() == str(id_casa):
                     return user
             return None
         except Exception as e:
@@ -171,7 +176,7 @@ class SheetsService:
 
     # --- FUNCIÓN: OBTENER MAPA DE USUARIOS (Para el Admin Panel) ---
     def get_all_users_map(self) -> Dict[str, Dict[str, Any]]:
-        """Retorna un mapa de usuarios {ID_CASA: {DATOS_USUARIO}}."""
+        """Retorna un mapa de usuarios {ID_CASA: {DATOS_USUARIO}}. Incluye ID_CASA 0."""
         try:
             users_data = self.get_all_records('USUARIOS')
         except Exception:
@@ -180,7 +185,7 @@ class SheetsService:
         user_map = {}
         for user in users_data:
             # Asegura que la clave del mapa sea el ID_CASA en formato string
-            casa_id = str(user.get('ID_CASA'))
+            casa_id = str(user.get('ID_CASA')).strip()
             if casa_id:
                 user_map[casa_id] = {
                     'NOMBRE': user.get('NOMBRE', 'N/A'),
@@ -191,7 +196,7 @@ class SheetsService:
 
     # --- FUNCIÓN: get_all_casa_ids ---
     def get_all_casa_ids(self) -> List[int]:
-        """Obtiene una lista de todos los ID_CASA activos de la hoja USUARIOS."""
+        """Obtiene una lista de todos los ID_CASA activos de la hoja USUARIOS. Incluye ID_CASA 0."""
         
         try:
             records = self.get_all_records('USUARIOS')
@@ -202,6 +207,7 @@ class SheetsService:
                 # Asumimos una columna 'ESTADO' que indica si la casa está ACTIVA o INACTIVA
                 estado = str(record.get('ESTADO', 'ACTIVO')).upper().strip() 
 
+                # Procesa el ID 0 si su estado es 'ACTIVO'
                 if casa_id_str and estado == 'ACTIVO':
                     try:
                         # Conversión a entero (gspread a veces retorna float para números)
@@ -251,6 +257,7 @@ class SheetsService:
     def update_or_append_semaforo(self, id_casa: int, dias_atraso: int, saldo: float, estado: str, cuotas_pendientes: int) -> bool:
         """
         Busca ID_CASA en ALERTAS_SEMAFORO. Si existe, actualiza (A:F); si no, añade.
+        Ajustado para el orden de 6 columnas: ID_CASA, SALDO, DIAS_ATRASO, ESTADO, CUOTAS, FECHA
         """
         sheet = self.get_sheet('ALERTAS_SEMAFORO')
         data = sheet.get_all_values()
@@ -266,18 +273,18 @@ class SheetsService:
                 row_index_to_update = i + 2 # +2 porque data[0] es cabecera y el índice de gspread es base 1
                 break
 
-        # Usar la hora local corregida. Como el método get_local_datetime está en main.py, 
-        # aquí usaremos datetime.now() y la corregiremos en main.py si es necesario
+        # Usar la hora local.
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M') 
         
         # 2. Preparar nueva data (6 columnas A:F)
+        # ORDEN DE COLUMNAS: A, B, C, D, E, F
         new_data = [
-            target_id_str, # 1. ID_CASA (A)
-            str(dias_atraso), # 2. DIAS_ATRASO (B)
-            f"{saldo:.2f}", # 3. SALDO_PENDIENTE (C)
-            estado, # 4. ESTADO_SEMAFORO (D)
+            target_id_str,          # 1. ID_CASA (A)
+            f"{saldo:.2f}",         # 2. SALDO_PENDIENTE (B) <-- Ajustado para ser el SALDO
+            str(dias_atraso),       # 3. DIAS_ATRASO (C)    <-- Ajustado
+            estado,                 # 4. ESTADO_SEMAFORO (D)
             str(cuotas_pendientes), # 5. CUOTAS_PENDIENTES (E)
-            current_time, # 6. FECHA_ACTUALIZACION (F)
+            current_time,           # 6. FECHA_ACTUALIZACION (F)
         ]
         
         try:
@@ -296,25 +303,28 @@ class SheetsService:
     def get_semaforo_by_casa(self, id_casa: int) -> Optional[Dict[str, Any]]:
         """
         Busca y retorna el estado del semáforo consolidado para una casa específica.
+        Mapeo ajustado para el orden de 6 columnas: ID_CASA, SALDO, DIAS_ATRASO, ESTADO, CUOTAS, FECHA
         """
         sheet_name = 'ALERTAS_SEMAFORO'
         try:
             sheet = self.get_sheet(sheet_name)
             data = sheet.get_all_values()
             
+            # Cabecera esperada (para referencia): ['ID_CASA', 'SALDO', 'DIAS_ATRASO', 'ESTADO_SEMAFORO', 'CUOTAS_PENDIENTES', 'FECHA_ACTUALIZACION']
+            
             for row in data[1:]: # Ignora la fila de headers
-                if not row or str(row[0]) != str(id_casa):
+                if not row or str(row[0]).strip() != str(id_casa):
                     continue
                 
                 # Mapeo de las 6 columnas de datos
                 if len(row) >= 6:
                     return {
                         "ID_CASA": row[0],
-                        "DIAS_ATRASO": int(row[1]) if row[1].isdigit() else 0,
-                        "SALDO_PENDIENTE": float(row[2]) if row[2] else 0.0,
-                        "ESTADO_SEMAFORO": row[3],
-                        "CUOTAS_PENDIENTES": int(row[4]) if row[4].isdigit() else 0,
-                        "FECHA_ACTUALIZACION": row[5] 
+                        "SALDO": float(row[1]) if row[1] else 0.0, # Columna B: SALDO
+                        "DIAS_ATRASO": int(row[2]) if row[2].isdigit() else 0, # Columna C: DIAS_ATRASO
+                        "ESTADO_SEMAFORO": row[3], # Columna D: ESTADO
+                        "CUOTAS_PENDIENTES": int(row[4]) if row[4].isdigit() else 0, # Columna E: CUOTAS
+                        "FECHA_ACTUALIZACION": row[5] # Columna F: FECHA
                     }
                 
             return None # Casa no encontrada
