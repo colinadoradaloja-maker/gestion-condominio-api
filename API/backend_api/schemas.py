@@ -1,10 +1,11 @@
+# API/backend_api/schemas.py
+
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
-import pytz # Necesario si quieres usar datetime aware objects en los modelos
+import pytz 
 
-# Definir la zona horaria: Guayaquil = GTM-5 (UTC-5)
-# Aunque no se usa directamente aquí, es buena práctica mantener la referencia si se necesita validar fechas.
+# Definir la zona horaria
 LOCAL_TIMEZONE = pytz.timezone('America/Guayaquil') 
 
 
@@ -25,8 +26,8 @@ class TokenResponse(BaseModel):
 
 class TokenData(BaseModel):
     """Datos internos que se almacenan en el payload del JWT (leído por security.py)."""
-    sub: Optional[str] = None #DNI del usuario (subject)
-    ID_CASA: Optional[int] = None #Campo con nombre original de la hoja
+    sub: Optional[str] = None # DNI del usuario (subject)
+    ID_CASA: Optional[int] = None # Campo con nombre original de la hoja
     ROL: Optional[str] = None
 
 class User(BaseModel):
@@ -60,7 +61,7 @@ class Movimiento(BaseModel):
     concepto: Optional[str] = Field(None, alias="CONCEPTO")
     monto: float = Field(..., alias="MONTO")
     
-    # TIPADO CORREGIDO: datetime (incluye la hora y la zona horaria)
+# TIPADO CORREGIDO: datetime (incluye la hora y la zona horaria)
     fecha_vencimiento: Optional[datetime] = Field(None, alias="FECHA_VENCIMIENTO")
     tipo_pago: Optional[str] = Field(None, alias="TIPO_PAGO")
     fecha_registro: Optional[datetime] = Field(None, alias="FECHA_REGISTRO")
@@ -106,8 +107,6 @@ class EstadoCuentaResponse(BaseModel):
     estado_semaforo: Optional[str] = Field(None)
     dias_atraso: Optional[int] = Field(None)
     cuotas_pendientes: Optional[int] = Field(None)
-    
-
 # --------------------------------------------------------
 # --- 3. Modelos de Creación (Input para el Admin) ---
 # --------------------------------------------------------
@@ -146,22 +145,39 @@ class AlicuotaCreation(BaseModel):
         except ValueError:
             raise ValueError('MES_PERIODO debe tener el formato AAAA-MM (ej: 2025-04).')
         return v
-    
+ 
 class TesoreriaCreation(BaseModel):
     """Modelo para registrar cualquier movimiento (Ingreso o Egreso) a la Tesorería (ID_CASA 0)."""
-    TIPO_TRANSACCION: Literal["INGRESO", "EGRESO"] = Field(..., description="Debe ser 'INGRESO' o 'EGRESO'.")
+    
+    # 📌 CORRECCIÓN 1: Nuevo campo que controla INGRESO/EGRESO
+    # Este es el campo que clasifica la dirección del flujo de caja.
+    TIPO_MOVIMIENTO_FINANCIERO: Literal["INGRESO", "EGRESO"] = Field(
+        ..., 
+        description="Clasificación financiera: 'INGRESO' o 'EGRESO'."
+    )
+    
+    # 📌 CORRECCIÓN 2: El campo de NEGOCIO (lo que se registra en la columna TIPO_MOVIMIENTO de Sheets)
+    # Este campo estaba como TIPO_TRANSACCION en la versión anterior. Lo renombramos a TIPO_MOVIMIENTO 
+    # y lo validamos como el tipo de negocio (Cuota, Gasto, etc.)
+    TIPO_MOVIMIENTO: Literal["CUOTA", "GASTO", "MULTA", "AJUSTE", "OTRO"] = Field(
+        ..., 
+        description="Categoría de negocio: CUOTA, GASTO, MULTA, o AJUSTE."
+    )
+    
     MONTO: float = Field(..., gt=0.0, description="Monto en valor absoluto.")
     CONCEPTO: str
-    # 🌟 CAMBIO AÑADIDO 🌟
-    TIPO_MOVIMIENTO_FINANCIERO: str = Field(..., description="Efectivo, Transferencia, Cheque, o Ajuste.")
     
-    @field_validator('TIPO_MOVIMIENTO_FINANCIERO')
+    # 📌 CORRECCIÓN 3: Campo TIPO_PAGO (forma de pago: Transferencia/Efectivo)
+    # Le quitamos el Field y dejamos el field_validator
+    TIPO_PAGO: str = Field(..., description="Efectivo, Transferencia, Cheque, o Ajuste.")
+    
+    @field_validator('TIPO_PAGO') # <-- Este validator valida el campo TIPO_PAGO
     @classmethod
-    def validate_tipo_movimiento_financiero(cls, v: str):
+    def validate_tipo_pago(cls, v: str):
         clean_v = v.strip().upper() 
         # Incluir 'AJUSTE' para movimientos internos/contables sin flujo de caja.
         if clean_v not in ['TRANSFERENCIA', 'EFECTIVO', 'CHEQUE', 'AJUSTE']:
-            raise ValueError("TIPO_MOVIMIENTO_FINANCIERO debe ser Transferencia, Efectivo, Cheque o Ajuste.")
+            raise ValueError("TIPO_PAGO debe ser Transferencia, Efectivo, Cheque o Ajuste.")
         return clean_v
     
 # --------------------------------------------------------

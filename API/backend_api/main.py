@@ -698,9 +698,8 @@ def get_estado_cuenta(id_casa: int, payload: schemas.TokenData = Depends(get_cur
 # ----------------------------------------------------------------------
 # ----------------- 7. ENDPOINTS DE TESORERÍA (ADMIN/TESORERIA) -----------------
 # ----------------------------------------------------------------------
-
 @app.post("/admin/tesoreria/transaccion", tags=["Admin", "Tesorería"], 
-             dependencies=[Depends(require_admin_or_tesoreria)])
+        dependencies=[Depends(require_admin_or_tesoreria)])
 def register_tesoreria_transaccion(
     data: schemas.TesoreriaCreation, 
     payload: schemas.TokenData = Depends(get_current_user_payload)
@@ -718,27 +717,28 @@ def register_tesoreria_transaccion(
         mes_periodo = get_local_datetime().strftime('%Y-%m') 
         
         # 1. Determinar el MONTO final con el signo correcto
-        # INGRESO: Positivo (Aumenta el saldo de Tesorería)
-        # EGRESO: Negativo (Disminuye el saldo de Tesorería)
+        # Se usa TIPO_MOVIMIENTO_FINANCIERO para el signo.
         monto_final = abs(data.MONTO)
-        if data.TIPO_TRANSACCION.upper() == "EGRESO":
+        # El campo para el signo es TIPO_MOVIMIENTO_FINANCIERO (que es el ajuste correcto)
+        if data.TIPO_MOVIMIENTO_FINANCIERO.upper() == "EGRESO":
             monto_final = -abs(data.MONTO) 
         
         # 2. Datos a escribir en la hoja MOVIMIENTOS
-        # ORDEN DE COLUMNAS: ID, ID_CASA, MES_PERIODO, TIPO_MOV, CONCEPTO, MONTO, FECHA_VENCIMIENTO, TIPO_PAGO, FECHA_REGISTRO
+        # ORDEN DE COLUMNAS (10 campos): ID, ID_CASA, MES_PERIODO, TIPO_MOV, CONCEPTO, MONTO, FECHA_VENCIMIENTO, TIPO_PAGO, TIPO_MOVIMIENTO_FINANCIERO, FECHA_REGISTRO
         new_row = [
             next_id, 
-            "0", # ID_CASA fijo para Tesorería
+            "0", # ID_CASA
             mes_periodo,
-            data.TIPO_TRANSACCION.upper(), 
-            data.CONCEPTO, 
-            monto_final, 
-            "", # FECHA_VENCIMIENTO (Vacío)
-            
-            # 🌟 CORRECCIÓN CLAVE: Se usa el campo TIPO_MOVIMIENTO_FINANCIERO para TIPO_PAGO 🌟
-            data.TIPO_MOVIMIENTO_FINANCIERO.upper(), 
-            
-            fecha_registro 
+            # Usamos TIPO_MOVIMIENTO (Valor de negocio: Cuota/Gasto)
+            data.TIPO_MOVIMIENTO.upper(), # Columna 4: TIPO_MOVIMIENTO
+            data.CONCEPTO, # Columna 5: CONCEPTO
+            monto_final, # Columna 6: MONTO (con signo)
+            "", # Columna 7: FECHA_VENCIMIENTO (Vacío)
+            # Usamos TIPO_PAGO (Forma de pago)
+            data.TIPO_PAGO.upper(), # Columna 8: TIPO_PAGO 
+            # Incluimos el nuevo campo TIPO_MOVIMIENTO_FINANCIERO (Ingreso/Egreso)
+            data.TIPO_MOVIMIENTO_FINANCIERO.upper(), # Columna 9: TIPO_MOVIMIENTO_FINANCIERO
+            fecha_registro # Columna 10: FECHA_REGISTRO
         ]
         
         sheets_service.append_movement(new_row)
@@ -749,8 +749,6 @@ def register_tesoreria_transaccion(
         print(f"[ERROR ESCRITURA TESORERIA]: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Error al registrar la transacción de Tesorería en la base de datos.")
-
-
 # ----------------------------------------------------------------------
 # ----------------- FIN DE ENDPOINTS -----------------
 # ----------------------------------------------------------------------
