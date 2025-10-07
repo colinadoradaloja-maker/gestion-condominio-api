@@ -3,7 +3,7 @@ import pytz
 from datetime import datetime, date, timedelta
 from typing import List, Dict, Any, Optional
 
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, APIRouter
 
 # --- Importaciones Consolidadas ---
 from API.backend_api import schemas
@@ -19,7 +19,9 @@ from API.backend_api.security import (
 # ----------------- CONFIGURACIÓN DE ZONA HORARIA Y UTILIDADES -----------------
 # ----------------------------------------------------------------------
 
+# Inicialización de la aplicación FastAPI y el router
 app = FastAPI(title="Backend Condominio FastAPI")
+router = APIRouter() # Usamos un router para la estructura si el archivo es grande
 
 # Definir la zona horaria: Guayaquil = GTM-5 (UTC-5)
 LOCAL_TIMEZONE = pytz.timezone('America/Guayaquil') 
@@ -273,7 +275,7 @@ def register_multa(multa_data: schemas.MultaCreation, payload: schemas.TokenData
             multa_data.CONCEPTO, 
             monto_positivo, 
             "", # FECHA_VENCIMIENTO (Vacío para multas)
-            "", # TIPO_PAGO (Vacío)
+            "", # TIPO_PAGO (Vacío, no aplica a una multa inicial)
             fecha_registro
         ]
         
@@ -698,13 +700,14 @@ def get_estado_cuenta(id_casa: int, payload: schemas.TokenData = Depends(get_cur
 # ----------------------------------------------------------------------
 
 @app.post("/admin/tesoreria/transaccion", tags=["Admin", "Tesorería"], 
-             dependencies=[Depends(require_admin_or_tesoreria)]) # <--- DEPENDENCIA ACTUALIZADA
+             dependencies=[Depends(require_admin_or_tesoreria)])
 def register_tesoreria_transaccion(
     data: schemas.TesoreriaCreation, 
     payload: schemas.TokenData = Depends(get_current_user_payload)
 ):
     """
-    Registra un Ingreso (donación, extra) o un Egreso (gasto) de la administración (ID_CASA=0).
+    Registra un INGRESO o EGRESO al saldo de Tesorería (ID_CASA=0).
+    El campo TIPO_MOVIMIENTO_FINANCIERO es obligatorio para auditoría.
     """
     if sheets_service is None:
         raise HTTPException(status_code=503, detail="Servicio de base de datos no disponible.")
@@ -712,71 +715,42 @@ def register_tesoreria_transaccion(
     try:
         next_id = sheets_service.generate_next_movement_id()
         fecha_registro = get_local_datetime().strftime('%Y-%m-%d %H:%M')
-        mes_periodo = get_local_datetime().strftime('%Y-%m')
+        mes_periodo = get_local_datetime().strftime('%Y-%m') 
         
-        tipo_mov = data.TIPO_TRANSACCION.upper()
+        # 1. Determinar el MONTO final con el signo correcto
+        # INGRESO: Positivo (Aumenta el saldo de Tesorería)
+        # EGRESO: Negativo (Disminuye el saldo de Tesorería)
+        monto_final = abs(data.MONTO)
+        if data.TIPO_TRANSACCION.upper() == "EGRESO":
+            monto_final = -abs(data.MONTO) 
         
-        # El monto se invierte si es un EGRESO (debe ser negativo en la hoja)
-        if tipo_mov == 'EGRESO':
-            monto = -abs(data.MONTO)
-        else: # INGRESO (debe ser positivo)
-            monto = abs(data.MONTO)
-
+        # 2. Datos a escribir en la hoja MOVIMIENTOS
         # ORDEN DE COLUMNAS: ID, ID_CASA, MES_PERIODO, TIPO_MOV, CONCEPTO, MONTO, FECHA_VENCIMIENTO, TIPO_PAGO, FECHA_REGISTRO
         new_row = [
             next_id, 
-            0, # <-- ID_CASA de la ADMINISTRACIÓN (Tesorería)
+            "0", # ID_CASA fijo para Tesorería
             mes_periodo,
-            tipo_mov, 
+            data.TIPO_TRANSACCION.upper(), 
             data.CONCEPTO, 
-            monto, 
+            monto_final, 
             "", # FECHA_VENCIMIENTO (Vacío)
-            "", # TIPO_PAGO (Vacío)
+            
+            # 🌟 CORRECCIÓN CLAVE: Se usa el campo TIPO_MOVIMIENTO_FINANCIERO para TIPO_PAGO 🌟
+            data.TIPO_MOVIMIENTO_FINANCIERO.upper(), 
+            
             fecha_registro 
         ]
         
         sheets_service.append_movement(new_row)
         
-        return {"status": "success", "message": f"{tipo_mov} de Tesorería registrado. ID: {next_id}", "ID_MOVIMIENTO": next_id}
+        return {"status": "success", "message": f"Transacción de Tesorería registrada con éxito. ID: {next_id}", "ID_MOVIMIENTO": next_id}
         
     except Exception as e:
         print(f"[ERROR ESCRITURA TESORERIA]: {e}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Error al registrar la transacción de Tesorería.")
+        raise HTTPException(status_code=500, detail="Error al registrar la transacción de Tesorería en la base de datos.")
 
 
-@app.get("/admin/tesoreria/estado", tags=["Admin", "Tesorería"], 
-             dependencies=[Depends(require_admin_or_tesoreria)], # <--- DEPENDENCIA ACTUALIZADA
-             response_model=schemas.TesoreriaEstadoResponse) # <--- RESPONSE_MODEL AÑADIDO
-def get_tesoreria_estado(payload: schemas.TokenData = Depends(get_current_user_payload)):
-    """
-    Calcula el saldo real del fondo de Tesorería del condominio (ID_CASA=0).
-    """
-    if sheets_service is None:
-        raise HTTPException(status_code=503, detail="Servicio de base de datos no disponible.")
-
-    try:
-        # 1. Obtener solo los movimientos de la Tesorería (ID_CASA=0)
-        movimientos_data = sheets_service.get_records_by_casa_id('MOVIMIENTOS', 0)
-        
-        saldo_disponible = 0.0
-        
-        for record in movimientos_data:
-            try:
-                # Suma/resta todos los movimientos de la Tesorería.
-                # 'PAGO', 'INGRESO' son positivos (dinero entrando al fondo).
-                # 'EGRESO' es negativo (dinero saliendo del fondo).
-                saldo_disponible += float(record.get('MONTO', 0.0))
-            except (ValueError, KeyError, TypeError):
-                continue
-        
-        return schemas.TesoreriaEstadoResponse(
-            status="success",
-            message="Saldo calculado con éxito.",
-            saldo_disponible=round(saldo_disponible, 2)
-        )
-        
-    except Exception as e:
-        print(f"[ERROR FATAL ESTADO TESORERIA]: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Error interno al calcular el estado de Tesorería.")
+# ----------------------------------------------------------------------
+# ----------------- FIN DE ENDPOINTS -----------------
+# ----------------------------------------------------------------------

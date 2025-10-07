@@ -88,9 +88,6 @@ class SemaforoResult(BaseModel):
 class EstadoCuentaResponse(BaseModel):
     """
     Respuesta COMPLETA del estado de cuenta, unificada para Condómino y Admin.
-    
-    NOTA: El endpoint de Condómino usa solo los campos sueltos (id_casa, saldo_pendiente, etc.) 
-    mientras que el de Admin usa la estructura completa (condomino, semaforo_actual).
     """
     # CAMPOS PRINCIPALES (Para la respuesta ADMIN detallada y el resumen del Condómino)
     status: str = Field("success")
@@ -155,8 +152,17 @@ class TesoreriaCreation(BaseModel):
     TIPO_TRANSACCION: Literal["INGRESO", "EGRESO"] = Field(..., description="Debe ser 'INGRESO' o 'EGRESO'.")
     MONTO: float = Field(..., gt=0.0, description="Monto en valor absoluto.")
     CONCEPTO: str
+    # 🌟 CAMBIO AÑADIDO 🌟
+    TIPO_MOVIMIENTO_FINANCIERO: str = Field(..., description="Efectivo, Transferencia, Cheque, o Ajuste.")
     
-    # Se elimina el validator redundante ya que usamos Literal
+    @field_validator('TIPO_MOVIMIENTO_FINANCIERO')
+    @classmethod
+    def validate_tipo_movimiento_financiero(cls, v: str):
+        clean_v = v.strip().upper() 
+        # Incluir 'AJUSTE' para movimientos internos/contables sin flujo de caja.
+        if clean_v not in ['TRANSFERENCIA', 'EFECTIVO', 'CHEQUE', 'AJUSTE']:
+            raise ValueError("TIPO_MOVIMIENTO_FINANCIERO debe ser Transferencia, Efectivo, Cheque o Ajuste.")
+        return clean_v
     
 # --------------------------------------------------------
 # --- 4. Modelos de Respuesta de Procesos y Tesorería ---
