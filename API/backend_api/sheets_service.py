@@ -4,6 +4,13 @@ import os
 import base64
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+import pytz # <-- NUEVA IMPORTACIÓN
+
+# Importar las excepciones de gspread para un manejo de errores más claro
+from gspread.exceptions import WorksheetNotFound, SpreadsheetNotFound 
+
+# Definición de la zona horaria local (Guayaquil, Ecuador)
+LOCAL_TIMEZONE = pytz.timezone('America/Guayaquil') # <-- NUEVA CONSTANTE
 
 # --- Definición de Errores ---
 class ConnectionError(Exception):
@@ -20,8 +27,8 @@ class SheetsService:
     
     def __init__(self):
         """Inicializa la conexión a Google Sheets usando credenciales Base64 del entorno."""
-        self.sh = None
-        self.gc = None
+        self.sh = None # Objeto Spreadsheet (Hoja de cálculo)
+        self.gc = None # Objeto gspread.Client (Cliente)
         
         try:
             # 1. Verificar si la variable Base64 existe
@@ -42,7 +49,7 @@ class SheetsService:
             try:
                 self.sh = self.gc.open(SPREADSHEET_NAME)
                 print(f"[INFO] Conexión exitosa a Google Sheets: '{SPREADSHEET_NAME}'")
-            except gspread.exceptions.SpreadsheetNotFound:
+            except SpreadsheetNotFound:
                 print(f"[ERROR] Hoja de cálculo '{SPREADSHEET_NAME}' no encontrada.")
                 self.sh = None
                 
@@ -56,10 +63,14 @@ class SheetsService:
     # --- MÉTODOS EXISTENTES ---
     
     def get_sheet(self, sheet_title: str) -> gspread.Worksheet:
-        """Obtiene una hoja por su título."""
+        """Obtiene una hoja por su título. Añade manejo de WorksheetNotFound."""
         if not self.sh:
-            raise ConnectionError("No se pudo conectar a la hoja de cálculo.")
-        return self.sh.worksheet(sheet_title)
+            raise ConnectionError(f"No se pudo conectar a la hoja de cálculo: '{SPREADSHEET_NAME}'.")
+        try:
+            return self.sh.worksheet(sheet_title)
+        except WorksheetNotFound:
+            # Lanza una excepción personalizada con un mensaje claro
+            raise ConnectionError(f"ERROR: Hoja de trabajo '{sheet_title}' no encontrada en el Spreadsheet.")
 
     def get_all_records(self, sheet_title: str) -> List[Dict[str, Any]]:
         """Obtiene todos los datos de una hoja como lista de diccionarios (usa la primera fila como cabecera)."""
@@ -226,30 +237,28 @@ class SheetsService:
         next_number = last_number + 1
         return f"M{next_number:04d}" 
 
-    # MÉTODO DE ESCRITURA: Añade una fila (CORREGIDO Y UBICADO)
+    # MÉTODO DE ESCRITURA: Añade una fila (CORREGIDO)
     def append_movement(self, data_row: list):
-        """Añade una fila a la hoja MOVIMIENTOS, asegurando la inserción en el rango A:J (10 columnas)."""
-        # Rango de inserción ajustado a 10 columnas (A:J)
-        range_name = f'{self.MOVEMENTS_SHEET_NAME}!A:J' 
+        """Añade una fila a la hoja MOVIMIENTOS usando el método simple de gspread."""
         
-        body = {
-            'values': [data_row]
-        }
+        try:
+            # 1. Obtenemos la hoja de trabajo (Worksheet) usando get_sheet
+            movimientos_sheet = self.get_sheet(self.MOVEMENTS_SHEET_NAME)
+            
+            # 2. **CORRECCIÓN APLICADA:** Usar el método nativo de gspread para añadir la fila
+            result = movimientos_sheet.append_row(
+                values=data_row,
+                value_input_option='USER_ENTERED' # Para que los valores se interpreten correctamente
+            )
+            
+            return result
         
-        # Obtenemos la hoja para poder usar el ID del spreadsheet
-        movimientos_sheet = self.get_sheet(self.MOVEMENTS_SHEET_NAME)
-        
-        # Usamos el cliente del gspread para la llamada a la API
-        result = movimientos_sheet.client.spreadsheets().values().append(
-            spreadsheetId=movimientos_sheet.spreadsheet.id, # Usamos el ID del spreadsheet
-            range=range_name,
-            valueInputOption='USER_ENTERED', 
-            insertDataOption='INSERT_ROWS',
-            body=body
-        ).execute()
-        
-        return result
-    
+        except ConnectionError as ce: # Manejo del error que get_sheet puede lanzar
+             print(f"[ERROR gspread APPEND] Error de conexión/hoja: {ce}")
+             raise ce
+        except Exception as e:
+            print(f"[ERROR gspread APPEND] Fallo al añadir fila a MOVIMIENTOS: {e}")
+            raise e
     # ----------------------------------------------------------------------
     # --- MÉTODOS DE SEMÁFORO (USAN get_all_values() y update()) ---
     # ----------------------------------------------------------------------
@@ -272,18 +281,18 @@ class SheetsService:
                 row_index_to_update = i + 2 # +2 porque data[0] es cabecera y el índice de gspread es base 1
                 break
 
-        # Usar la hora local.
-        current_time = datetime.now().strftime('%Y-%m-%d %H:%M') 
+        # CORRECCIÓN DE FECHA Y HORA: Usar la zona horaria de Guayaquil (GMT-5)
+        current_time_local = datetime.now(LOCAL_TIMEZONE).strftime('%Y-%m-%d %H:%M') 
         
         # 2. Preparar nueva data (6 columnas A:F)
         # ORDEN DE COLUMNAS: A, B, C, D, E, F
         new_data = [
-            target_id_str,          # 1. ID_CASA (A)
-            f"{saldo:.2f}",        # 2. SALDO (B)
-            str(dias_atraso),      # 3. DIAS_ATRASO (C)
-            estado,                # 4. ESTADO_SEMAFORO (D)
+            target_id_str,          # 1. ID_CASA (A)
+            f"{saldo:.2f}",        # 2. SALDO (B)
+            str(dias_atraso),      # 3. DIAS_ATRASO (C)
+            estado,                # 4. ESTADO_SEMAFORO (D)
             str(cuotas_pendientes),# 5. CUOTAS_PENDIENTES (E)
-            current_time,          # 6. FECHA_ACTUALIZACION (F)
+            current_time_local,    # 6. FECHA_ACTUALIZACION (F)
         ]
         
         try:
@@ -326,18 +335,9 @@ class SheetsService:
                 
             return None # Casa no encontrada
             
+        except ConnectionError:
+            # Si get_sheet lanza ConnectionError (hoja no existe), retornamos None
+            return None
         except Exception as e:
             print(f"[ERROR SHEETS] Error al obtener el semáforo para la Casa {id_casa} de {sheet_name}: {e}")
             return None
-
-# Instancia global para usar en FastAPI
-try:
-    sheets_service = SheetsService()
-    if sheets_service.sh is None:
-        sheets_service = None
-except ConnectionError as e:
-    print(f"ERROR DE CONEXIÓN GLOBAL: {e}")
-    sheets_service = None
-except Exception as e:
-    print(f"ERROR INESPERADO en la inicialización global: {e}")
-    sheets_service = None
