@@ -4,13 +4,13 @@ import os
 import base64
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-import pytz # <-- NUEVA IMPORTACIÓN
+import pytz 
 
 # Importar las excepciones de gspread para un manejo de errores más claro
 from gspread.exceptions import WorksheetNotFound, SpreadsheetNotFound 
 
 # Definición de la zona horaria local (Guayaquil, Ecuador)
-LOCAL_TIMEZONE = pytz.timezone('America/Guayaquil') # <-- NUEVA CONSTANTE
+LOCAL_TIMEZONE = pytz.timezone('America/Guayaquil') 
 
 # --- Definición de Errores ---
 class ConnectionError(Exception):
@@ -287,12 +287,12 @@ class SheetsService:
         # 2. Preparar nueva data (6 columnas A:F)
         # ORDEN DE COLUMNAS: A, B, C, D, E, F
         new_data = [
-            target_id_str,          # 1. ID_CASA (A)
-            f"{saldo:.2f}",        # 2. SALDO (B)
-            str(dias_atraso),      # 3. DIAS_ATRASO (C)
-            estado,                # 4. ESTADO_SEMAFORO (D)
-            str(cuotas_pendientes),# 5. CUOTAS_PENDIENTES (E)
-            current_time_local,    # 6. FECHA_ACTUALIZACION (F)
+            target_id_str,           # 1. ID_CASA (A)
+            f"{saldo:.2f}",          # 2. SALDO (B)
+            str(dias_atraso),        # 3. DIAS_ATRASO (C)
+            estado,                  # 4. ESTADO_SEMAFORO (D)
+            str(cuotas_pendientes),  # 5. CUOTAS_PENDIENTES (E)
+            current_time_local,      # 6. FECHA_ACTUALIZACION (F)
         ]
         
         try:
