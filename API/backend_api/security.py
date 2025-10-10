@@ -78,15 +78,24 @@ def get_current_user_payload(token: str = Depends(oauth2_scheme)) -> TokenData:
 
 # --- Dependencia para Requerir Roles (RoleChecker) ---
 class RoleChecker:
-    """Clase para verificar si el usuario tiene un rol específico."""
-    def __init__(self, required_role: str):
-        self.required_role = required_role
+    """Clase para verificar si el usuario tiene un rol o uno de los roles específicos."""
+    # ACEPTA UNA LISTA DE ROLES
+    def __init__(self, allowed_roles: List[str]):
+        # Se asegura de que la lista sea de roles en MAYÚSCULAS para consistencia
+        self.allowed_roles = [role.upper() for role in allowed_roles]
 
     def __call__(self, payload: TokenData = Depends(get_current_user_payload)):
-        """Verifica si el rol del token coincide con el rol requerido."""
-        if payload.ROL != self.required_role:
+        """Verifica si el rol del token está en los roles permitidos."""
+        
+        # Convierte el rol del payload a mayúsculas para la comparación
+        user_role = payload.ROL.upper() 
+        
+        # LA VERIFICACIÓN CAMBIA: Verificar si el rol está DENTRO de la lista
+        if user_role not in self.allowed_roles:
+            # Puedes hacer la respuesta más específica para el usuario
+            roles_str = ', '.join(self.allowed_roles)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Acceso denegado. Se requiere el rol: {self.required_role}.",
+                detail=f"Acceso denegado. Se requiere uno de los roles: {roles_str}.",
             )
         return payload
